@@ -7,13 +7,13 @@ from pydantic import BaseModel, Field
 
 
 class TradingControlRequest(BaseModel):
-    action: Literal["start", "stop", "restart"]
+    action: Literal["start", "stop", "restart", "panic"]
     configuration_id: int
 
 
 class TradingControlResponse(BaseModel):
     strategy_id: str | None = None
-    status: Literal["starting", "running", "stopping", "stopped", "restarting", "error"]
+    status: Literal["starting", "running", "stopping", "stopped", "restarting", "panic", "error"]
     message: str
 
 

@@ -9,6 +9,7 @@ import {
   Descriptions,
   Divider,
   List,
+  Popconfirm,
   Progress,
   Row,
   Space,
@@ -24,6 +25,7 @@ import {
   StrategyStatus,
   TradingConfig,
   TradingControlResult,
+  TradingControlAction,
   RuntimeLimits,
   RuntimeTotals,
   TradingSessionSummary,
@@ -190,7 +192,7 @@ export default function TradingControlPanel() {
   );
   const spotBadgeStatus: "success" | "processing" | "error" = spotError ? "error" : spotConnected ? "success" : "processing";
 
-  const controlMutation = useMutation<TradingControlResult, Error, { action: "start" | "stop" | "restart" }>({
+  const controlMutation = useMutation<TradingControlResult, Error, { action: TradingControlAction }>({
     mutationFn: ({ action }) => {
       if (!activeConfig) throw new Error("Activate a configuration first");
       return controlTrading(action, activeConfig.id);
@@ -209,7 +211,7 @@ export default function TradingControlPanel() {
     }
   };
 
-  const handleControlAction = (action: "start" | "stop" | "restart") => {
+  const handleControlAction = (action: TradingControlAction) => {
     controlMutation.mutate({ action });
   };
 
@@ -303,6 +305,7 @@ export default function TradingControlPanel() {
   const canStart = runtimeStatus === "idle" || runtimeStatus === "cooldown";
   const canStop = runtimeStatus === "entering" || runtimeStatus === "live" || runtimeStatus === "waiting";
   const canRestart = runtimeStatus !== "idle";
+  const canPanic = runtimeStatus === "entering" || runtimeStatus === "live";
 
   return (
     <Card
@@ -697,6 +700,25 @@ export default function TradingControlPanel() {
               >
                 Stop
               </Button>
+              <Popconfirm
+                title="Force exit open positions?"
+                description="Immediately closes open legs and halts the strategy."
+                okText="Yes, panic close"
+                cancelText="Cancel"
+                okType="danger"
+                disabled={!activeConfig || controlMutation.isPending || !canPanic}
+                onConfirm={() => handleControlAction("panic")}
+              >
+                <Button
+                  danger
+                  type="primary"
+                  ghost
+                  loading={controlMutation.isPending}
+                  disabled={!activeConfig || controlMutation.isPending || !canPanic}
+                >
+                  Panic Close
+                </Button>
+              </Popconfirm>
               <Button
                 onClick={() => handleControlAction("restart")}
                 loading={controlMutation.isPending}

@@ -57,6 +57,23 @@ class TradingService:
             await self.session.commit()
             return {"status": "restarting", "strategy_id": strategy_id, "message": "Strategy restart initiated"}
 
+        if command.action == "panic":
+            strategy_id = await self.engine.panic_close()
+            if strategy_id:
+                await self._mark_session_stopped()
+                await self.session.commit()
+                return {
+                    "status": "panic",
+                    "strategy_id": strategy_id,
+                    "message": "Panic close triggered and strategy halted",
+                }
+            await self.session.commit()
+            return {
+                "status": "stopped",
+                "strategy_id": None,
+                "message": "No active strategy to panic close",
+            }
+
         raise ValueError(f"Unsupported action {command.action}")
 
     async def heartbeat(self) -> dict:

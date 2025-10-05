@@ -166,6 +166,53 @@ class TradingEngine:
                 await self._client.close()
                 self._client = None
 
+    async def panic_close(self) -> str | None:
+        async with self._lock:
+            if not self._task or not self._state:
+                logger.info("Panic close requested but no active strategy")
+                return None
+
+            state = self._state
+            strategy_id = state.strategy_id
+            logger.warning("Panic close invoked for strategy %s", strategy_id)
+
+            state.exit_reason = state.exit_reason or "panic_close"
+            state.active = False
+
+            await self._force_exit()
+
+            now = datetime.now(UTC)
+            self._update_entry_summary(
+                state,
+                {
+                    "status": "cooldown",
+                    "exit_reason": state.exit_reason,
+                    "panic_triggered_at": now,
+                },
+            )
+
+            monitor_snapshot = dict(state.last_monitor_snapshot or {})
+            monitor_snapshot.update(
+                {
+                    "exit_reason": state.exit_reason,
+                    "status": "cooldown",
+                    "generated_at": now.isoformat(),
+                }
+            )
+            state.last_monitor_snapshot = monitor_snapshot
+            self._merge_session_metadata(state, {"monitor": monitor_snapshot})
+
+            self._stop_event.set()
+            await self._task
+            self._task = None
+            self._state = None
+
+            if self._client:
+                await self._client.close()
+                self._client = None
+
+            return strategy_id
+
     async def status(self) -> dict[str, Any]:
         if not self._state:
             return {"status": "idle"}

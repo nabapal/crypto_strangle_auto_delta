@@ -32,9 +32,11 @@ export interface TradingSessionSummary {
 
 export interface TradingControlResult {
   strategy_id?: string;
-  status: string;
+  status: "starting" | "running" | "stopping" | "stopped" | "restarting" | "panic" | "error";
   message: string;
 }
+
+export type TradingControlAction = "start" | "stop" | "restart" | "panic";
 
 export interface AnalyticsKpi {
   label: string;
@@ -121,7 +123,7 @@ export const deleteConfiguration = async (configId: number) => {
   await client.delete(`/configs/${configId}`);
 };
 
-export const controlTrading = async (action: "start" | "stop" | "restart", configurationId: number) => {
+export const controlTrading = async (action: TradingControlAction, configurationId: number) => {
   const response = await client.post<TradingControlResult>("/trading/control", {
     action,
     configuration_id: configurationId

@@ -1,10 +1,12 @@
 import asyncio
 from datetime import datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.models import StrategySession, TradingConfiguration
+from app.models import PositionLedger, StrategySession, TradingConfiguration
+from app.schemas.trading import TradingControlRequest
 from app.services.trading_engine import OptionContract, StrategyRuntimeState, TradingEngine
 from app.services.trading_service import TradingService
 
@@ -31,6 +33,47 @@ async def test_trading_engine_start_stop(db_session):
     await engine.stop()
     status = await engine.status()
     assert status["status"] == "idle" or status["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_trading_engine_panic_close_forces_exit():
+    config = TradingConfiguration(name="Panic Config", quantity=1, contract_size=1.0)
+    session = StrategySession(
+        strategy_id="panic-strategy",
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+    )
+    session.positions.append(
+        PositionLedger(
+            symbol="BTC-TEST",
+            side="short",
+            entry_price=100.0,
+            exit_price=None,
+            quantity=1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=5.0,
+            entry_time=datetime.utcnow(),
+            exit_time=None,
+            trailing_sl_state=None,
+            analytics={},
+        )
+    )
+
+    engine = TradingEngine()
+    engine._state = StrategyRuntimeState(strategy_id="panic-strategy", config=config, session=session)
+    engine._state.active = True
+    engine._state.last_monitor_snapshot = {}
+    engine._task = asyncio.create_task(asyncio.sleep(0))
+
+    strategy_id = await engine.panic_close()
+
+    assert strategy_id == "panic-strategy"
+    assert engine._state is None
+    assert engine._task is None
+    position = session.positions[0]
+    assert position.exit_time is not None
+    assert session.status == "stopped"
 
 
 def test_select_contracts_prefers_highest_delta():
@@ -279,6 +322,27 @@ async def test_trading_service_runtime_snapshot_uses_metadata(db_session):
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 12.5
     assert snapshot["schedule"]["planned_exit_at"] == "2025-10-05T15:20:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_trading_service_panic_action_dispatches_engine(db_session):
+    config = TradingConfiguration(name="Panic Service", quantity=1, contract_size=1.0)
+    db_session.add(config)
+    await db_session.flush()
+
+    engine = TradingEngine()
+    engine.panic_close = AsyncMock(return_value="panic-strategy")  # type: ignore[assignment]
+
+    service = TradingService(db_session, engine=engine)
+    assert config.id is not None
+
+    response = await service.control(
+        TradingControlRequest(action="panic", configuration_id=cast(int, config.id))
+    )
+
+    engine.panic_close.assert_awaited_once()
+    assert response["status"] == "panic"
+    assert response["strategy_id"] == "panic-strategy"
 
 
 def test_compute_exit_time_rolls_to_next_day(monkeypatch):
