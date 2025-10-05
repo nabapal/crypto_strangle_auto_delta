@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     default_trade_time_ist: str = "09:30"
     default_exit_time_ist: str = "15:20"
     default_expiry_buffer_hours: int = 24
+    default_contract_size: float = 0.001
 
     # Live order execution strategy
     delta_order_retry_attempts: int = 4

@@ -17,6 +17,7 @@ from ..core.config import get_settings
 from ..models import OrderLedger, PositionLedger, StrategySession, TradingConfiguration
 from ..schemas.trading import AnalyticsResponse, AnalyticsKpi
 from .delta_exchange_client import DeltaExchangeClient
+from .delta_websocket_client import OptionPriceStream
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,12 @@ class StrategyRuntimeState:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     trailing_level: float = 0.0
     max_profit_seen: float = 0.0
+    max_profit_seen_pct: float = 0.0
+    portfolio_notional: float = 0.0
     scheduled_entry_at: datetime | None = None
     entry_summary: Dict[str, Any] = field(default_factory=dict)
     last_monitor_snapshot: Dict[str, Any] = field(default_factory=dict)
+    exit_reason: str | None = None
 
 
 class TradingEngine:
@@ -79,8 +83,45 @@ class TradingEngine:
         self._task: asyncio.Task | None = None
         self._state: StrategyRuntimeState | None = None
         self._client: DeltaExchangeClient | None = None
+        self._price_stream: OptionPriceStream | None = None
         self._stop_event = asyncio.Event()
         self._settings = get_settings()
+
+    @staticmethod
+    def _normalize_percent(value: float | None) -> float:
+        if value is None:
+            return 0.0
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if 0 < numeric <= 1:
+            return numeric * 100
+        return numeric
+
+    @staticmethod
+    def _percent_from_amount(amount: float, notional: float) -> float:
+        if notional <= 0:
+            return 0.0
+        return (amount / notional) * 100
+
+    @staticmethod
+    def _amount_from_percent(percent: float, notional: float) -> float:
+        if notional <= 0:
+            return percent
+        return (percent / 100) * notional
+
+    def _resolve_portfolio_notional(self, state: StrategyRuntimeState) -> float:
+        notional = state.portfolio_notional
+        if notional and notional > 0:
+            return notional
+        fallback = 0.0
+        for position in state.session.positions:
+            analytics = position.analytics or {}
+            contract_size = self._to_float(analytics.get("contract_size"), self._config_contract_size())
+            entry_quantity = abs(self._to_float(position.quantity, 0.0))
+            fallback += abs(self._to_float(position.entry_price, 0.0)) * entry_quantity * contract_size
+        return fallback
 
     async def start(self, session: StrategySession, config: TradingConfiguration) -> str:
         async with self._lock:
@@ -154,39 +195,77 @@ class TradingEngine:
                 },
                 "entry": None,
                 "positions": [],
-                "totals": {"realized": 0.0, "unrealized": 0.0, "total_pnl": 0.0},
-                "trailing": {"level": 0.0, "max_profit_seen": 0.0, "enabled": False},
+                "totals": {"realized": 0.0, "unrealized": 0.0, "total_pnl": 0.0, "notional": 0.0, "total_pnl_pct": 0.0},
+                "limits": {
+                    "max_profit_pct": 0.0,
+                    "max_loss_pct": 0.0,
+                    "effective_loss_pct": 0.0,
+                    "trailing_enabled": False,
+                    "trailing_level_pct": 0.0,
+                },
+                    "trailing": {"level": 0.0, "max_profit_seen": 0.0, "max_profit_seen_pct": 0.0, "enabled": False},
+                "exit_reason": None,
                 "config": None,
             }
 
         scheduled_entry_at = state.scheduled_entry_at
         time_to_entry = None
         if scheduled_entry_at is not None:
+            scheduled_entry_at = self._ensure_utc_datetime(scheduled_entry_at)
+            state.scheduled_entry_at = scheduled_entry_at
             time_to_entry = (scheduled_entry_at - now).total_seconds()
 
         runtime_summary = dict(state.last_monitor_snapshot) if state.last_monitor_snapshot else {}
         positions = runtime_summary.get("positions")
         totals = runtime_summary.get("totals")
+        limits = runtime_summary.get("limits")
+        exit_reason = runtime_summary.get("exit_reason") or state.exit_reason
+        if isinstance(limits, dict):
+            limits = {
+                "max_profit_pct": self._normalize_percent(limits.get("max_profit_pct")),
+                "max_loss_pct": self._normalize_percent(limits.get("max_loss_pct")),
+                "effective_loss_pct": self._normalize_percent(limits.get("effective_loss_pct")),
+                "trailing_enabled": bool(limits.get("trailing_enabled", False)),
+                "trailing_level_pct": self._normalize_percent(limits.get("trailing_level_pct")),
+            }
+            state.trailing_level = limits["trailing_level_pct"]
 
+        fallback_notional = 0.0
         if positions is None:
             positions = []
             for position in state.session.positions:
                 analytics = position.analytics or {}
+                contract_size = self._to_float(analytics.get("contract_size"), self._config_contract_size())
+                entry_quantity = abs(self._to_float(position.quantity, 0.0))
+                fallback_notional += abs(self._to_float(position.entry_price, 0.0)) * entry_quantity * contract_size
                 positions.append(
                     self._json_ready(
                         {
                             "symbol": position.symbol,
+                            "market_symbol": position.symbol,
+                            "exchange": "Delta",
                             "side": position.side,
+                            "direction": position.side,
                             "entry_price": position.entry_price,
                             "exit_price": position.exit_price,
                             "quantity": position.quantity,
+                            "size": abs(self._to_float(position.quantity, 0.0)),
                             "status": "open" if position.exit_time is None else "closed",
                             "mark_price": analytics.get("mark_price"),
+                            "current_price": analytics.get("mark_price") or analytics.get("last_price"),
+                            "last_price": analytics.get("last_price"),
+                            "best_bid": analytics.get("best_bid"),
+                            "best_ask": analytics.get("best_ask"),
                             "pnl_abs": analytics.get("pnl_abs"),
                             "pnl_pct": analytics.get("pnl_pct"),
                             "entry_time": position.entry_time,
                             "exit_time": position.exit_time,
                             "trailing": position.trailing_sl_state or {},
+                            "contract_size": self._to_float(
+                                analytics.get("contract_size"),
+                                self._config_contract_size(),
+                            ),
+                            "notional": analytics.get("notional"),
                         }
                     )
                 )
@@ -196,7 +275,41 @@ class TradingEngine:
             unrealized = sum(
                 self._to_float(pos.unrealized_pnl, 0.0) for pos in state.session.positions if pos.exit_time is None
             )
-            totals = {"realized": realized, "unrealized": unrealized, "total_pnl": realized + unrealized}
+            total_pnl = realized + unrealized
+            if fallback_notional <= 0:
+                fallback_notional = sum(
+                    abs(
+                        self._to_float(pos.entry_price, 0.0)
+                        * abs(self._to_float(pos.quantity, 0.0))
+                        * self._to_float((pos.analytics or {}).get("contract_size"), self._config_contract_size())
+                    )
+                    for pos in state.session.positions
+                )
+            total_notional = fallback_notional
+            totals = {
+                "realized": realized,
+                "unrealized": unrealized,
+                "total_pnl": total_pnl,
+                "notional": total_notional,
+                "total_pnl_pct": (total_pnl / total_notional * 100) if total_notional > 0 else 0.0,
+            }
+
+        state.portfolio_notional = totals.get("notional", 0.0) or 0.0
+
+        if limits is None:
+            config = state.config
+            max_profit_pct = self._normalize_percent(getattr(config, "max_profit_pct", 0.0))
+            max_loss_pct = self._normalize_percent(getattr(config, "max_loss_pct", 0.0))
+            trailing_enabled = bool(getattr(config, "trailing_sl_enabled", False))
+            trailing_level_pct = self._normalize_percent(state.trailing_level or 0.0)
+            effective_loss_pct = trailing_level_pct if trailing_enabled and trailing_level_pct > 0 else max_loss_pct
+            limits = {
+                "max_profit_pct": max_profit_pct,
+                "max_loss_pct": max_loss_pct,
+                "effective_loss_pct": effective_loss_pct,
+                "trailing_enabled": trailing_enabled,
+                "trailing_level_pct": trailing_level_pct,
+            }
 
         planned_exit_dt = self._compute_exit_time(state.config)
         planned_exit_at = runtime_summary.get("planned_exit_at")
@@ -210,8 +323,15 @@ class TradingEngine:
         trailing_info = runtime_summary.get("trailing") or {
             "level": state.trailing_level,
             "max_profit_seen": state.max_profit_seen,
+            "max_profit_seen_pct": state.max_profit_seen_pct,
             "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
         }
+        if isinstance(trailing_info, dict):
+            state.max_profit_seen = float(trailing_info.get("max_profit_seen", state.max_profit_seen) or 0.0)
+            state.max_profit_seen_pct = self._normalize_percent(
+                trailing_info.get("max_profit_seen_pct", state.max_profit_seen_pct)
+            )
+            state.trailing_level = self._normalize_percent(trailing_info.get("level", state.trailing_level))
 
         entry_payload = self._json_ready(state.entry_summary) if state.entry_summary else None
         entry_status = str(state.entry_summary.get("status", "waiting")) if state.entry_summary else "waiting"
@@ -241,7 +361,9 @@ class TradingEngine:
             "entry": entry_payload,
             "positions": positions,
             "totals": totals,
+            "limits": limits,
             "trailing": trailing_info,
+            "exit_reason": exit_reason,
             "config": self._json_ready(self._config_summary(state.config)),
         }
 
@@ -520,7 +642,8 @@ class TradingEngine:
         snapshot_time = datetime.now(UTC)
         pnl_snapshot = {"timestamp": snapshot_time.isoformat(), "pnl": totals["total_pnl"]}
         state.pnl_history.append(pnl_snapshot)
-        self._update_trailing_state(pnl_snapshot["pnl"])
+        state.portfolio_notional = totals.get("notional", 0.0) or 0.0
+        self._update_trailing_state(pnl_snapshot["pnl"], state.portfolio_notional)
         planned_exit_at = self._compute_exit_time(state.config)
         time_to_exit = None
         if planned_exit_at is not None:
@@ -531,6 +654,20 @@ class TradingEngine:
             "unrealized": totals["unrealized"],
             "total": totals["total_pnl"],
             "updated_at": snapshot_time.isoformat(),
+        }
+
+        config = state.config
+        max_profit_pct = self._normalize_percent(getattr(config, "max_profit_pct", 0.0))
+        max_loss_pct = self._normalize_percent(getattr(config, "max_loss_pct", 0.0))
+        trailing_enabled = bool(getattr(config, "trailing_sl_enabled", False))
+        trailing_level_pct = self._normalize_percent(state.trailing_level or 0.0)
+        effective_loss_pct = trailing_level_pct if trailing_enabled and trailing_level_pct > 0 else max_loss_pct
+        limits = {
+            "max_profit_pct": max_profit_pct,
+            "max_loss_pct": max_loss_pct,
+            "effective_loss_pct": effective_loss_pct,
+            "trailing_enabled": trailing_enabled,
+            "trailing_level_pct": trailing_level_pct,
         }
 
         self._update_entry_summary(
@@ -546,14 +683,17 @@ class TradingEngine:
             "generated_at": snapshot_time.isoformat(),
             "positions": positions_payload,
             "totals": totals,
+            "limits": limits,
             "planned_exit_at": self._serialize_datetime(planned_exit_at),
             "time_to_exit_seconds": time_to_exit,
             "trailing": {
                 "level": state.trailing_level,
                 "max_profit_seen": state.max_profit_seen,
+                "max_profit_seen_pct": state.max_profit_seen_pct,
                 "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
             },
             "status": "live" if state.active else "idle",
+            "exit_reason": state.exit_reason,
         }
         state.last_monitor_snapshot = runtime_summary
         self._merge_session_metadata(
@@ -567,6 +707,7 @@ class TradingEngine:
         exit_reason = self._check_exit_conditions()
         if exit_reason:
             logger.info("Exit condition met: %s", exit_reason)
+            state.exit_reason = exit_reason
             await self._force_exit()
             state.active = False
             self._update_entry_summary(
@@ -612,16 +753,31 @@ class TradingEngine:
         config = state.config
         if not state.pnl_history:
             return None
-        latest = state.pnl_history[-1]["pnl"]
-        max_loss = float(cast(float, getattr(config, "max_loss_pct", 0.0) or 0.0))
-        max_profit = float(cast(float, getattr(config, "max_profit_pct", 0.0) or 0.0))
-        if latest <= -max_loss:
-            return "max_loss"
-        if latest >= max_profit:
-            return "max_profit"
+        latest = float(state.pnl_history[-1]["pnl"] or 0.0)
+        notional = self._resolve_portfolio_notional(state)
+        latest_pct = self._percent_from_amount(latest, notional)
+        max_loss_pct = self._normalize_percent(getattr(config, "max_loss_pct", 0.0))
+        max_profit_pct = self._normalize_percent(getattr(config, "max_profit_pct", 0.0))
+
+        if max_loss_pct > 0:
+            if notional > 0 and latest_pct <= -max_loss_pct:
+                return "max_loss"
+            if notional <= 0 and latest <= -max_loss_pct:
+                return "max_loss"
+
+        if max_profit_pct > 0:
+            if notional > 0 and latest_pct >= max_profit_pct:
+                return "max_profit"
+            if notional <= 0 and latest >= max_profit_pct:
+                return "max_profit"
+
         trailing_enabled = bool(getattr(config, "trailing_sl_enabled", False))
-        if trailing_enabled and state.trailing_level and latest <= state.trailing_level:
-            return "trailing_sl"
+        trailing_level_pct = self._normalize_percent(state.trailing_level or 0.0)
+        if trailing_enabled and trailing_level_pct > 0:
+            if notional > 0 and latest_pct <= trailing_level_pct:
+                return "trailing_sl"
+            if notional <= 0 and latest <= trailing_level_pct:
+                return "trailing_sl"
         return None
 
     def _build_ticker_params(self, config: TradingConfiguration) -> tuple[dict[str, str], date | None]:
@@ -774,6 +930,7 @@ class TradingEngine:
         assert self._state is not None
         session = self._state.session
         quantity = float(self._config_contracts())
+        contract_size = self._config_contract_size()
         for contract in contracts:
             self._state.mark_prices[contract.symbol] = contract.mid_price
             order = OrderLedger(
@@ -798,12 +955,13 @@ class TradingEngine:
                 unrealized_pnl=0.0,
                 entry_time=datetime.now(UTC),
                 trailing_sl_state={"level": 0.0},
-                    analytics={
-                        "mark_price": contract.mid_price,
-                        "pnl_abs": 0.0,
-                        "pnl_pct": 0.0,
-                        "updated_at": datetime.now(UTC).isoformat(),
-                    },
+                analytics={
+                    "mark_price": contract.mid_price,
+                    "pnl_abs": 0.0,
+                    "pnl_pct": 0.0,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "contract_size": contract_size,
+                },
             )
             session.orders.append(order)
             session.positions.append(position)
@@ -1254,6 +1412,7 @@ class TradingEngine:
         assert self._state is not None
         session = self._state.session
         now = datetime.now(UTC)
+        contract_size = self._config_contract_size()
 
         for contract, outcome, side in orders:
             final_status = outcome.final_status or {}
@@ -1314,6 +1473,7 @@ class TradingEngine:
                         "pnl_abs": 0.0,
                         "pnl_pct": 0.0,
                         "updated_at": now.isoformat(),
+                        "contract_size": contract_size,
                     },
                 )
                 session.positions.append(position)
@@ -1410,6 +1570,8 @@ class TradingEngine:
         now_utc = datetime.now(UTC)
         current_ist = now_utc.astimezone(IST)
         exit_local = datetime.combine(current_ist.date(), exit_time, tzinfo=IST)
+        if exit_local <= current_ist:
+            exit_local = exit_local + timedelta(days=1)
         return exit_local.astimezone(UTC)
 
     @staticmethod
@@ -1422,6 +1584,12 @@ class TradingEngine:
             return value.astimezone(UTC).isoformat()
         return datetime.combine(value, time_obj.min, tzinfo=UTC).isoformat()
 
+    @staticmethod
+    def _ensure_utc_datetime(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
     def _json_ready(self, value: Any) -> Any:
         if isinstance(value, (datetime, date)):
             return self._serialize_datetime(value)
@@ -1430,6 +1598,20 @@ class TradingEngine:
         if isinstance(value, dict):
             return {key: self._json_ready(val) for key, val in value.items()}
         return value
+
+    async def _ensure_price_stream(self) -> OptionPriceStream:
+        if self._price_stream is None:
+            self._price_stream = OptionPriceStream()
+            await self._price_stream.start()
+        return self._price_stream
+
+    async def _stop_price_stream(self) -> None:
+        if self._price_stream is None:
+            return
+        try:
+            await self._price_stream.stop()
+        finally:
+            self._price_stream = None
 
     def _merge_session_metadata(self, state: StrategyRuntimeState, updates: Dict[str, Any]) -> None:
         metadata = dict(state.session.session_metadata or {})
@@ -1479,18 +1661,60 @@ class TradingEngine:
         positions_payload: list[Dict[str, Any]] = []
         total_unrealized = 0.0
         total_realized = 0.0
-        contract_size = self._config_contract_size()
+        total_notional = 0.0
+        default_contract_size = self._config_contract_size()
         now = datetime.now(UTC)
         mode = str(state.entry_summary.get("mode", "simulation")) if state.entry_summary else "simulation"
         client = self._client if mode == "live" and self._client else None
 
+        open_symbols = {
+            position.symbol
+            for position in state.session.positions
+            if position.exit_time is None and abs(self._to_float(position.quantity, 0.0)) > 0
+        }
+
+        stream: OptionPriceStream | None = None
+        if open_symbols:
+            stream = await self._ensure_price_stream()
+            await stream.set_symbols(open_symbols)
+        else:
+            await self._stop_price_stream()
+
         for position in state.session.positions:
-            quantity = abs(self._to_float(position.quantity, 0.0))
+            quantity_raw = self._to_float(position.quantity, 0.0)
+            quantity = abs(quantity_raw)
             if quantity <= 0:
                 continue
 
-            mark_price = (position.analytics or {}).get("mark_price") if position.analytics else None
-            if position.exit_time is None and client:
+            analytics_snapshot = dict(position.analytics or {})
+            raw_contract_size = analytics_snapshot.get("contract_size")
+            try:
+                position_contract_size = float(raw_contract_size) if raw_contract_size is not None else default_contract_size
+            except (TypeError, ValueError):
+                position_contract_size = default_contract_size
+            if position_contract_size <= 0:
+                position_contract_size = default_contract_size
+            mark_price = analytics_snapshot.get("mark_price")
+            last_price = analytics_snapshot.get("last_price")
+            best_bid = analytics_snapshot.get("best_bid")
+            best_ask = analytics_snapshot.get("best_ask")
+            entry_notional = abs(position.entry_price * quantity * position_contract_size)
+            total_notional += entry_notional
+
+            quote = stream.get_quote(position.symbol) if stream else None
+            if quote:
+                if quote.get("mark_price") is not None:
+                    mark_price = self._to_float(quote["mark_price"], mark_price or position.entry_price)
+                if quote.get("last_price") is not None:
+                    last_price = self._to_float(quote["last_price"], last_price or mark_price or position.entry_price)
+                if quote.get("best_bid") is not None:
+                    best_bid = self._to_float(quote["best_bid"], best_bid or mark_price or position.entry_price)
+                if quote.get("best_ask") is not None:
+                    best_ask = self._to_float(quote["best_ask"], best_ask or mark_price or position.entry_price)
+                if mark_price is not None:
+                    state.mark_prices[position.symbol] = mark_price
+
+            if mark_price is None and position.exit_time is None and client:
                 try:
                     ticker = await client.get_ticker(position.symbol)
                 except Exception:  # noqa: BLE001
@@ -1498,13 +1722,17 @@ class TradingEngine:
                 else:
                     result = ticker.get("result") or ticker.get("data") or {}
                     mark_price = self._to_float(result.get("mark_price"), mark_price or position.entry_price)
-                    state.mark_prices[position.symbol] = mark_price
+                    last_price = self._to_float(result.get("last_price"), last_price or mark_price or position.entry_price)
+                    best_bid = self._to_float(result.get("best_bid_price") or result.get("best_bid"), best_bid or mark_price or position.entry_price)
+                    best_ask = self._to_float(result.get("best_ask_price") or result.get("best_ask"), best_ask or mark_price or position.entry_price)
+                    if mark_price is not None:
+                        state.mark_prices[position.symbol] = mark_price
 
             if mark_price is None:
                 mark_price = position.exit_price or position.entry_price
 
             if position.exit_time is None:
-                pnl_abs = self._calculate_unrealized(position, mark_price, contract_size)
+                pnl_abs = self._calculate_unrealized(position, mark_price, position_contract_size)
                 total_unrealized += pnl_abs
                 position.unrealized_pnl = pnl_abs
             else:
@@ -1512,35 +1740,54 @@ class TradingEngine:
                 total_realized += pnl_abs
                 position.unrealized_pnl = 0.0
 
-            pnl_pct = self._calculate_pnl_pct(position, pnl_abs, contract_size)
+            pnl_pct = self._calculate_pnl_pct(position, pnl_abs, position_contract_size)
             position.analytics = {
-                **(position.analytics or {}),
+                **analytics_snapshot,
                 "mark_price": mark_price,
+                "last_price": last_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
+                "contract_size": position_contract_size,
+                "notional": entry_notional,
                 "updated_at": now.isoformat(),
             }
 
             leg_payload = {
                 "symbol": position.symbol,
+                "market_symbol": position.symbol,
+                "exchange": "Delta",
                 "side": position.side,
+                "direction": position.side,
                 "entry_price": position.entry_price,
                 "exit_price": position.exit_price,
                 "quantity": quantity,
+                "size": quantity,
+                "contract_size": position_contract_size,
                 "status": "open" if position.exit_time is None else "closed",
                 "mark_price": mark_price,
+                "current_price": mark_price,
+                "last_price": last_price,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
+                "notional": entry_notional,
                 "entry_time": position.entry_time,
                 "exit_time": position.exit_time,
                 "trailing": position.trailing_sl_state or {},
             }
             positions_payload.append(self._json_ready(leg_payload))
 
+        total_pnl = total_realized + total_unrealized
+        total_pct = (total_pnl / total_notional * 100) if total_notional > 0 else 0.0
         totals = {
             "unrealized": total_unrealized,
             "realized": total_realized,
-            "total_pnl": total_realized + total_unrealized,
+            "total_pnl": total_pnl,
+            "notional": total_notional,
+            "total_pnl_pct": total_pct,
         }
         return positions_payload, totals
 
@@ -1653,24 +1900,40 @@ class TradingEngine:
     def _config_contract_size(self) -> float:
         if self._state is None:
             return 1.0
-        contract_size = getattr(self._state.config, "contract_size", 1.0) or 1.0
+        settings_default = getattr(self._settings, "default_contract_size", None)
+        if settings_default is not None:
+            try:
+                settings_default = float(settings_default) or 0.001
+            except (TypeError, ValueError):
+                settings_default = 0.001
+        else:
+            settings_default = 0.001
+
+        contract_size = getattr(self._state.config, "contract_size", settings_default) or settings_default
         try:
             return float(contract_size)
         except (TypeError, ValueError):
-            logger.warning("Invalid contract_size '%s'; defaulting to 1.0", contract_size)
-            return 1.0
+            logger.warning("Invalid contract_size '%s'; defaulting to %s", contract_size, settings_default)
+            return float(settings_default)
 
     async def _cleanup(self) -> None:
+        if self._price_stream is not None:
+            try:
+                await self._price_stream.stop()
+            finally:
+                self._price_stream = None
         if self._client:
             await self._client.close()
             self._client = None
         logger.info("Trading engine cleaned up")
 
-    def _update_trailing_state(self, latest_pnl: float) -> None:
+    def _update_trailing_state(self, latest_pnl: float, notional: float) -> None:
         state = self._state
         if state is None:
             return
         state.max_profit_seen = max(state.max_profit_seen, latest_pnl)
+        latest_pct = self._percent_from_amount(latest_pnl, notional)
+        state.max_profit_seen_pct = max(state.max_profit_seen_pct, latest_pct)
         config = state.config
         if not bool(getattr(config, "trailing_sl_enabled", False)):
             return
@@ -1682,8 +1945,10 @@ class TradingEngine:
                 sl = float(sl_str)
             except (TypeError, ValueError):
                 continue
-            if state.max_profit_seen >= trigger:
-                applicable_level = max(applicable_level, sl)
+            trigger_pct = self._normalize_percent(trigger)
+            sl_pct = self._normalize_percent(sl)
+            if state.max_profit_seen_pct >= trigger_pct:
+                applicable_level = max(applicable_level, sl_pct)
         state.trailing_level = applicable_level
 
     @staticmethod

@@ -97,12 +97,23 @@ class StrategyRuntimeTotals(BaseModel):
     realized: float = 0.0
     unrealized: float = 0.0
     total_pnl: float = 0.0
+    notional: float = 0.0
+    total_pnl_pct: float = 0.0
 
 
 class StrategyRuntimeTrailing(BaseModel):
     level: float = 0.0
     max_profit_seen: float = 0.0
+    max_profit_seen_pct: float = 0.0
     enabled: bool = False
+
+
+class StrategyRuntimeLimits(BaseModel):
+    max_profit_pct: float = 0.0
+    max_loss_pct: float = 0.0
+    effective_loss_pct: float = 0.0
+    trailing_enabled: bool = False
+    trailing_level_pct: float = 0.0
 
 
 class StrategyRuntimeResponse(BaseModel):
@@ -116,5 +127,7 @@ class StrategyRuntimeResponse(BaseModel):
     entry: dict | None = None
     positions: list[dict] = Field(default_factory=list)
     totals: StrategyRuntimeTotals
+    limits: StrategyRuntimeLimits
     trailing: StrategyRuntimeTrailing
+    exit_reason: Optional[str] = None
     config: dict | None = None

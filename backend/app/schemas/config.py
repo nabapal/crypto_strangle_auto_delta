@@ -18,8 +18,8 @@ class TradingConfigPayload(BaseModel):
     expiry_date: Optional[str] = Field(default=None, pattern=r"^\d{2}-\d{2}-\d{4}$")
     quantity: int = Field(ge=1)
     contract_size: float = Field(gt=0)
-    max_loss_pct: float = Field(gt=0, le=1)
-    max_profit_pct: float = Field(gt=0, le=1)
+    max_loss_pct: float = Field(gt=0, le=100)
+    max_profit_pct: float = Field(gt=0, le=100)
     trailing_sl_enabled: bool = True
     trailing_rules: Dict[str, float] = Field(default_factory=dict)
     is_active: bool = False
@@ -49,6 +49,19 @@ class TradingConfigPayload(BaseModel):
                 return parsed.strftime("%d-%m-%Y")
             raise ValueError("expiry_date must be provided as DD-MM-YYYY")
         raise TypeError("Invalid expiry_date value")
+
+    @field_validator("max_loss_pct", "max_profit_pct", mode="before")
+    @classmethod
+    def normalize_percentage(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return value
+        if 0 < numeric <= 1:
+            return numeric * 100
+        return numeric
 
 
 class TradingConfigResponse(TradingConfigPayload):

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -279,3 +279,33 @@ async def test_trading_service_runtime_snapshot_uses_metadata(db_session):
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 12.5
     assert snapshot["schedule"]["planned_exit_at"] == "2025-10-05T15:20:00+00:00"
+
+
+def test_compute_exit_time_rolls_to_next_day(monkeypatch):
+    engine = TradingEngine()
+    config = TradingConfiguration(
+        name="Exit Window",
+        quantity=1,
+        contract_size=1.0,
+        exit_time_ist="15:20",
+    )
+
+    from app.services import trading_engine as engine_module
+
+    real_datetime = engine_module.datetime
+
+    class FixedDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = real_datetime(2025, 10, 5, 16, 0, tzinfo=engine_module.UTC)
+            if tz is not None:
+                return base.astimezone(tz)
+            return base
+
+    monkeypatch.setattr(engine_module, "datetime", FixedDateTime)
+
+    exit_time = engine._compute_exit_time(config)
+    assert exit_time is not None
+    exit_local = exit_time.astimezone(engine_module.IST)
+    expected_date = (FixedDateTime.now(engine_module.IST).date() + timedelta(days=1))
+    assert exit_local.date() == expected_date

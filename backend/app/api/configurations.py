@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,18 @@ from ..services.config_service import ConfigService
 from .deps import get_db_session
 
 router = APIRouter(prefix="/configs", tags=["configuration"])
+
+
+def _normalize_percent(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if 0 < numeric <= 1:
+        return numeric * 100
+    return numeric
 
 
 def _serialize_config(config: TradingConfiguration) -> TradingConfigResponse:
@@ -23,8 +37,8 @@ def _serialize_config(config: TradingConfiguration) -> TradingConfigResponse:
         "expiry_date": config.expiry_date,
         "quantity": config.quantity,
         "contract_size": config.contract_size,
-        "max_loss_pct": config.max_loss_pct,
-        "max_profit_pct": config.max_profit_pct,
+    "max_loss_pct": _normalize_percent(cast(float | None, config.max_loss_pct)),
+    "max_profit_pct": _normalize_percent(cast(float | None, config.max_profit_pct)),
         "trailing_sl_enabled": config.trailing_sl_enabled,
         "trailing_rules": config.trailing_rules or {},
         "is_active": config.is_active,

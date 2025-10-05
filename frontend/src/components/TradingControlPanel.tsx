@@ -24,6 +24,8 @@ import {
   StrategyStatus,
   TradingConfig,
   TradingControlResult,
+  RuntimeLimits,
+  RuntimeTotals,
   TradingSessionSummary,
   controlTrading,
   fetchConfigurations,
@@ -56,6 +58,33 @@ const formatNumber = (value: unknown, minimumFractionDigits = 2, maximumFraction
     return "--";
   }
   return numeric.toLocaleString("en-US", { minimumFractionDigits, maximumFractionDigits });
+};
+
+const formatCurrency = (value: unknown) => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "--";
+  }
+  const abs = Math.abs(numeric);
+  let fractionDigits = 2;
+  if (abs < 1) {
+    fractionDigits = abs >= 0.01 ? 3 : 4;
+  }
+  return numeric.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits
+  });
+};
+
+const formatPercent = (value: unknown, maximumFractionDigits = 2) => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "--";
+  }
+  return numeric.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits
+  });
 };
 
 const formatDateTime = (value?: string | null) => {
@@ -125,9 +154,11 @@ export default function TradingControlPanel() {
   const latestSession = sessions?.[0];
   const runtimeStatus = (runtime?.status ?? "idle") as StrategyStatus;
 
-  const totalPnl = runtime?.totals?.total_pnl ?? 0;
-  const realized = runtime?.totals?.realized ?? 0;
-  const unrealized = runtime?.totals?.unrealized ?? 0;
+  const totals = (runtime?.totals as RuntimeTotals | undefined) ?? undefined;
+  const totalPnl = totals?.total_pnl ?? 0;
+  const realized = totals?.realized ?? 0;
+  const unrealized = totals?.unrealized ?? 0;
+  const totalPnlPct = Number.isFinite(totals?.total_pnl_pct) ? totals?.total_pnl_pct ?? null : null;
 
   const entry = (runtime?.entry as Record<string, unknown> | null) ?? null;
   const entryLegs = Array.isArray(entry?.legs) ? (entry.legs as Array<Record<string, unknown>>) : [];
@@ -140,6 +171,11 @@ export default function TradingControlPanel() {
   const schedule = runtime?.schedule;
   const positions = (runtime?.positions ?? []) as Array<Record<string, unknown>>;
   const runtimeConfig = (runtime?.config as Record<string, unknown> | null) ?? null;
+  const getConfigNumber = (config: Record<string, unknown> | null, key: string): number | null => {
+    if (!config) return null;
+    const value = config[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
   const deltaRange = Array.isArray(runtimeConfig?.delta_range) ? runtimeConfig.delta_range : undefined;
   const trailing = runtime?.trailing ?? null;
   const modeTagColor = runtime?.mode === "live" ? "green" : runtime?.mode === "simulation" ? "orange" : "default";
@@ -183,6 +219,86 @@ export default function TradingControlPanel() {
   const plannedExitDisplay = formatDateTime(schedule?.planned_exit_at ?? null);
   const timeToEntry = formatDuration(schedule?.time_to_entry_seconds);
   const timeToExit = formatDuration(schedule?.time_to_exit_seconds);
+
+  const limits = (runtime?.limits as RuntimeLimits | undefined) ?? undefined;
+  const configMaxProfit = getConfigNumber(runtimeConfig, "max_profit_pct");
+  const configMaxLoss = getConfigNumber(runtimeConfig, "max_loss_pct");
+  const maxProfitRaw = limits?.max_profit_pct ?? configMaxProfit ?? activeConfig?.max_profit_pct ?? null;
+  const maxLossRaw = limits?.max_loss_pct ?? configMaxLoss ?? activeConfig?.max_loss_pct ?? null;
+  const effectiveLossRaw = limits?.effective_loss_pct ?? maxLossRaw;
+  const maxProfitPct = typeof maxProfitRaw === "number" && Number.isFinite(maxProfitRaw) ? maxProfitRaw : null;
+  const maxLossPct = typeof maxLossRaw === "number" && Number.isFinite(maxLossRaw) ? maxLossRaw : null;
+  const effectiveLossPct = typeof effectiveLossRaw === "number" && Number.isFinite(effectiveLossRaw) ? effectiveLossRaw : null;
+  const maxProfitDisplay = maxProfitPct === null ? "--" : `${formatPercent(maxProfitPct)}%`;
+  const maxLossDisplay = maxLossPct === null ? "--" : `${formatPercent(maxLossPct)}%`;
+  const effectiveLossDisplay = effectiveLossPct === null ? "--" : `${formatPercent(effectiveLossPct)}%`;
+
+  const notional = totals && typeof totals.notional === "number" && Number.isFinite(totals.notional) ? totals.notional : null;
+  const maxProfitAmount =
+    typeof notional === "number" && typeof maxProfitPct === "number"
+      ? (notional * maxProfitPct) / 100
+      : null;
+  const maxLossAmount =
+    typeof notional === "number" && typeof maxLossPct === "number"
+      ? (notional * maxLossPct) / 100
+      : null;
+  const effectiveLossAmount =
+    typeof notional === "number" && typeof effectiveLossPct === "number"
+      ? (notional * effectiveLossPct) / 100
+      : null;
+  const maxProfitAmountDisplay =
+    typeof maxProfitAmount === "number" && Number.isFinite(maxProfitAmount)
+      ? `+$${formatCurrency(Math.abs(maxProfitAmount))}`
+      : null;
+  const maxLossAmountDisplay =
+    typeof maxLossAmount === "number" && Number.isFinite(maxLossAmount)
+      ? `-$${formatCurrency(Math.abs(maxLossAmount))}`
+      : null;
+  const effectiveLossAmountDisplay =
+    typeof effectiveLossAmount === "number" && Number.isFinite(effectiveLossAmount)
+      ? `-$${formatCurrency(Math.abs(effectiveLossAmount))}`
+      : null;
+
+  const trailingLevelPct = limits?.trailing_level_pct ?? trailing?.level ?? 0;
+  const trailingEnabled = limits?.trailing_enabled ?? trailing?.enabled ?? false;
+  const trailingMaxProfitSeen =
+    trailing && Number.isFinite(trailing.max_profit_seen) ? Number(trailing.max_profit_seen) : null;
+  const trailingMaxSeenPct =
+    trailingMaxProfitSeen !== null && typeof notional === "number" && notional > 0
+      ? (trailingMaxProfitSeen / notional) * 100
+      : null;
+  const trailingMaxSeenDisplay =
+    trailingMaxProfitSeen !== null
+      ? `Max Seen $${formatCurrency(trailingMaxProfitSeen)}${
+          trailingMaxSeenPct !== null ? ` (${formatPercent(trailingMaxSeenPct)}%)` : ""
+        }`
+      : null;
+  const trailingSummary = trailingEnabled
+    ? [
+        "Enabled",
+        trailingLevelPct > 0 ? `Level ${formatPercent(trailingLevelPct)}%` : null,
+        trailingMaxSeenDisplay
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "Disabled";
+  const trailingDetail = trailingEnabled
+    ? trailingLevelPct > 0
+      ? `Trailing SL active at ${formatPercent(trailingLevelPct)}%`
+      : "Trailing SL armed, awaiting trigger"
+    : "Trailing SL disabled";
+  const trailingLevelDisplay = trailingLevelPct > 0 ? `${formatPercent(trailingLevelPct)}%` : "--";
+  const trailingStatusTagColor = trailingEnabled ? "green" : "default";
+  const trailingStatusTagLabel = trailingEnabled ? "Enabled" : "Disabled";
+  const trailingMetaLines = trailingEnabled
+    ? [trailingLevelPct > 0 ? `Level ${formatPercent(trailingLevelPct)}%` : "Awaiting trigger", trailingMaxSeenDisplay]
+        .filter(Boolean)
+    : ["Trailing SL disabled"];
+  const trailingAdjustmentActive =
+    trailingEnabled &&
+    typeof maxLossPct === "number" &&
+    typeof effectiveLossPct === "number" &&
+    Math.abs(effectiveLossPct - maxLossPct) > 0.0001;
 
   const canStart = runtimeStatus === "idle" || runtimeStatus === "cooldown";
   const canStop = runtimeStatus === "entering" || runtimeStatus === "live" || runtimeStatus === "waiting";
@@ -233,7 +349,7 @@ export default function TradingControlPanel() {
       )}
 
       <Row gutter={16}>
-        <Col span={6}>
+        <Col span={4}>
           <Statistic
             title="Strategy Status"
             valueRender={() => (
@@ -247,7 +363,7 @@ export default function TradingControlPanel() {
             )}
           />
         </Col>
-        <Col span={6}>
+        <Col span={4}>
           <Statistic
             title="Execution Mode"
             valueRender={() => (
@@ -258,13 +374,14 @@ export default function TradingControlPanel() {
             )}
           />
         </Col>
-        <Col span={6}>
+        <Col span={5}>
           <Statistic
             title="Total PnL"
             valueRender={() => (
               <Space direction="vertical" size={0}>
                 <Text style={{ color: totalPnl >= 0 ? "#15803d" : "#b91c1c", fontSize: 20, fontWeight: 600 }}>
                   {`${totalPnl >= 0 ? "+" : "-"}$${formatNumber(Math.abs(totalPnl))}`}
+                  {Number.isFinite(totalPnlPct) ? ` (${formatPercent(totalPnlPct ?? 0)}%)` : ""}
                 </Text>
                 <Text type="secondary">
                   Realized ${formatNumber(realized)} · Unrealized ${formatNumber(unrealized)}
@@ -273,7 +390,44 @@ export default function TradingControlPanel() {
             )}
           />
         </Col>
-        <Col span={6}>
+        <Col span={7}>
+          <Statistic
+            title="Max Profit / Loss"
+            valueRender={() => (
+              <Space direction="vertical" size={6} style={{ alignItems: "flex-start" }}>
+                <Text style={{ color: "#15803d", fontSize: 16, fontWeight: 600 }}>
+                  Max Profit {maxProfitDisplay}
+                  {maxProfitAmountDisplay ? ` (${maxProfitAmountDisplay})` : ""}
+                </Text>
+                <Text style={{ color: "#b91c1c", fontSize: 16, fontWeight: 600 }}>
+                  Max Loss {maxLossDisplay}
+                  {maxLossAmountDisplay ? ` (${maxLossAmountDisplay})` : ""}
+                </Text>
+                {trailingAdjustmentActive ? (
+                  <Tag color="gold" style={{ marginTop: 4 }}>
+                    Effective {effectiveLossDisplay}
+                    {effectiveLossAmountDisplay ? ` (${effectiveLossAmountDisplay})` : ""}
+                  </Tag>
+                ) : null}
+                <Space direction="vertical" size={2} style={{ alignItems: "flex-start" }}>
+                  <Space size={8} align="start">
+                    <Tag color={trailingStatusTagColor}>{trailingStatusTagLabel}</Tag>
+                    {trailingMetaLines.length > 0 && (
+                      <Text type="secondary">{trailingMetaLines[0]}</Text>
+                    )}
+                  </Space>
+                  {trailingMetaLines.slice(1).map((line) => (
+                    <Text key={line} type="secondary">
+                      {line}
+                    </Text>
+                  ))}
+                </Space>
+                {trailingDetail && <Text type="secondary">{trailingDetail}</Text>}
+              </Space>
+            )}
+          />
+        </Col>
+        <Col span={4}>
           <Statistic
             title="BTC Spot Price"
             valueRender={() => (
@@ -420,12 +574,51 @@ export default function TradingControlPanel() {
               renderItem={(position) => {
                 const realizedPnl = Number(position?.realized_pnl ?? 0);
                 const unrealizedPnl = Number(position?.unrealized_pnl ?? 0);
-                const totalPositionPnl = realizedPnl + unrealizedPnl;
-                const isLoss = totalPositionPnl < 0;
-                const progressDenominator = Math.max(Math.abs(realizedPnl) + Math.abs(unrealizedPnl), 1);
-                const progressPercent = Math.min(Math.max((Math.abs(unrealizedPnl) / progressDenominator) * 100, 0), 100);
+                const rawTotalPnl = realizedPnl + unrealizedPnl;
                 const positionDirection = toDisplay(position.direction, "");
                 const closeReason = toDisplay(position.close_reason, "");
+                const positionSize = Number(position?.size ?? position?.quantity ?? 0);
+                const markPriceValue = Number(
+                  position?.mark_price ?? position?.current_price ?? position?.last_price ?? Number.NaN
+                );
+                const hasMarkPrice = Number.isFinite(markPriceValue);
+                const pnlPercent = Number(position?.pnl_pct ?? Number.NaN);
+                const contractSize = Number(position?.contract_size ?? 1) || 1;
+                const side = toDisplay(position?.side ?? position?.direction ?? "").toLowerCase();
+                const entryPrice = Number(position?.entry_price ?? Number.NaN);
+                const tolerance = 1e-6;
+
+                const derivedPnl = (() => {
+                  if (Math.abs(rawTotalPnl) > tolerance) {
+                    return rawTotalPnl;
+                  }
+                  if (!Number.isFinite(entryPrice) || !hasMarkPrice || positionSize <= 0) {
+                    return rawTotalPnl;
+                  }
+                  const delta = side === "short" ? entryPrice - markPriceValue : markPriceValue - entryPrice;
+                  return delta * positionSize * contractSize;
+                })();
+
+                const displayUnrealizedPnl = position.exit_time
+                  ? unrealizedPnl
+                  : Math.abs(unrealizedPnl) > tolerance
+                    ? unrealizedPnl
+                    : derivedPnl;
+
+                const progressDenominator = Math.max(
+                  Math.abs(realizedPnl) + Math.abs(displayUnrealizedPnl),
+                  1
+                );
+                const progressPercent = Math.min(
+                  Math.max((Math.abs(displayUnrealizedPnl) / progressDenominator) * 100, 0),
+                  100
+                );
+
+                const isGain =
+                  derivedPnl > tolerance || (Math.abs(derivedPnl) <= tolerance && Number.isFinite(pnlPercent) && pnlPercent > 0);
+                const isLoss =
+                  derivedPnl < -tolerance ||
+                  (Math.abs(derivedPnl) <= tolerance && Number.isFinite(pnlPercent) && pnlPercent < 0);
 
                 return (
                   <List.Item>
@@ -436,7 +629,8 @@ export default function TradingControlPanel() {
                         {positionDirection && <Tag>{positionDirection.toUpperCase()}</Tag>}
                       </Space>
                       <Text type="secondary">
-                        Entry ${formatNumber(position.entry_price, 2, 2)} · Size {formatNumber(position.size, 0, 4)}
+                        Entry ${formatNumber(position.entry_price, 2, 2)} · Size {formatNumber(positionSize, 0, 4)}
+                        {hasMarkPrice && ` · Mark ${formatNumber(markPriceValue, 2, 2)}`}
                         {position.exit_price !== null && ` · Exit ${formatNumber(position.exit_price, 2, 2)}`}
                       </Text>
                       <Progress
@@ -445,9 +639,12 @@ export default function TradingControlPanel() {
                         showInfo={false}
                       />
                       <Space>
-                        <Tag color={isLoss ? "red" : "green"}>Net ${formatNumber(totalPositionPnl, 2, 2)}</Tag>
+                        <Tag color={isGain ? "green" : isLoss ? "red" : "default"}>
+                          Net ${formatCurrency(derivedPnl)}
+                          {Number.isFinite(pnlPercent) ? ` (${formatPercent(pnlPercent)}%)` : ""}
+                        </Tag>
                         <Text type="secondary">
-                          Realized ${formatNumber(realizedPnl, 2, 2)} · Unrealized {formatNumber(unrealizedPnl, 2, 2)}
+                          Realized ${formatCurrency(realizedPnl)} · Unrealized ${formatCurrency(displayUnrealizedPnl)}
                         </Text>
                       </Space>
                       {closeReason && <Text type="secondary">Close reason: {closeReason}</Text>}
@@ -464,13 +661,13 @@ export default function TradingControlPanel() {
               <Descriptions.Item label="Planned Exit">{plannedExitDisplay}</Descriptions.Item>
               <Descriptions.Item label="Time to Exit">{timeToExit}</Descriptions.Item>
               <Descriptions.Item label="Trailing Enabled">
-                {trailing?.enabled ? <Tag color="green">Enabled</Tag> : <Tag color="red">Disabled</Tag>}
+                {trailingEnabled ? <Tag color="green">Enabled</Tag> : <Tag color="red">Disabled</Tag>}
               </Descriptions.Item>
               <Descriptions.Item label="Escalation Level">
-                {trailing ? trailing.level ?? "--" : "--"}
+                {trailingLevelDisplay}
               </Descriptions.Item>
               <Descriptions.Item label="Max Profit Seen">
-                ${formatNumber(trailing?.max_profit_seen ?? 0, 2, 2)}
+                {trailingMaxSeenDisplay ?? "--"}
               </Descriptions.Item>
               <Descriptions.Item label="Last Update">{formatDateTime(runtime?.generated_at)}</Descriptions.Item>
             </Descriptions>

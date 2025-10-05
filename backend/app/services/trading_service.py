@@ -100,16 +100,34 @@ class TradingService:
                     monitor_meta = runtime_meta.get("monitor") or {}
                     if monitor_meta:
                         snapshot["positions"] = snapshot.get("positions") or monitor_meta.get("positions", [])
-                        snapshot["totals"] = snapshot.get("totals") or monitor_meta.get("totals")
-                        schedule.setdefault("planned_exit_at", monitor_meta.get("planned_exit_at"))
-                        schedule.setdefault("time_to_exit_seconds", monitor_meta.get("time_to_exit_seconds"))
+                        snapshot["totals"] = monitor_meta.get("totals") or snapshot.get("totals")
+                        if monitor_meta.get("limits") and not snapshot.get("limits"):
+                            snapshot["limits"] = monitor_meta.get("limits")
+                        if schedule.get("planned_exit_at") is None and monitor_meta.get("planned_exit_at") is not None:
+                            schedule["planned_exit_at"] = monitor_meta.get("planned_exit_at")
+                        if schedule.get("time_to_exit_seconds") is None and monitor_meta.get("time_to_exit_seconds") is not None:
+                            schedule["time_to_exit_seconds"] = monitor_meta.get("time_to_exit_seconds")
                         snapshot["generated_at"] = snapshot.get("generated_at") or monitor_meta.get("generated_at")
                     if runtime_meta.get("scheduled_entry_at") and schedule.get("scheduled_entry_at") is None:
                         schedule["scheduled_entry_at"] = runtime_meta.get("scheduled_entry_at")
                     if runtime_meta.get("time_to_entry_seconds") and schedule.get("time_to_entry_seconds") is None:
                         schedule["time_to_entry_seconds"] = runtime_meta.get("time_to_entry_seconds")
                 snapshot["schedule"] = schedule
-        snapshot.setdefault("totals", {"realized": 0.0, "unrealized": 0.0, "total_pnl": 0.0})
+            snapshot.setdefault(
+                "totals",
+                {"realized": 0.0, "unrealized": 0.0, "total_pnl": 0.0, "notional": 0.0, "total_pnl_pct": 0.0},
+            )
+            snapshot.setdefault(
+                "limits",
+                {
+                    "max_profit_pct": 0.0,
+                    "max_loss_pct": 0.0,
+                    "effective_loss_pct": 0.0,
+                    "trailing_enabled": False,
+                    "trailing_level_pct": 0.0,
+                },
+            )
+            snapshot.setdefault("exit_reason", None)
         return snapshot
 
     async def get_sessions(self) -> list[StrategySession]:

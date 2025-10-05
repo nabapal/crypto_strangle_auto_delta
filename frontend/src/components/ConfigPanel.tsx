@@ -42,6 +42,35 @@ const defaultRules = {
   "0.5": 0.25
 };
 
+function normalizePercentValue(value?: number | null, fallback = 0): number {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) {
+    return fallback;
+  }
+  if (numeric < 0) {
+    return fallback;
+  }
+  if (numeric <= 1) {
+    return Number((numeric * 100).toFixed(4));
+  }
+  return Number(numeric.toFixed(4));
+}
+
+function clampPercentValue(value?: number | null): number {
+  const normalized = normalizePercentValue(value, 0);
+  if (normalized > 100) {
+    return 100;
+  }
+  return normalized;
+}
+
+function preparePercentPayload(value?: number | null): number {
+  return clampPercentValue(value);
+}
+
 function mapConfigToForm(config?: TradingConfig) {
   const trailingRulesObject = config?.trailing_rules ?? defaultRules;
   const trailing_rules = Object.entries(trailingRulesObject).map(([trigger, level]) => ({
@@ -57,11 +86,11 @@ function mapConfigToForm(config?: TradingConfig) {
       delta_range_high: 0.15,
       trade_time_ist: dayjs("09:30", "HH:mm"),
       exit_time_ist: dayjs("15:20", "HH:mm"),
-  expiry_date: null,
+      expiry_date: null,
       quantity: 1,
       contract_size: 0.001,
-      max_loss_pct: 0.5,
-      max_profit_pct: 0.5,
+      max_loss_pct: 40,
+      max_profit_pct: 80,
       trailing_sl_enabled: true,
       trailing_rules
     };
@@ -69,6 +98,8 @@ function mapConfigToForm(config?: TradingConfig) {
 
   return {
     ...config,
+    max_loss_pct: clampPercentValue(config.max_loss_pct),
+    max_profit_pct: clampPercentValue(config.max_profit_pct),
     trade_time_ist: dayjs(config.trade_time_ist, "HH:mm"),
     exit_time_ist: dayjs(config.exit_time_ist, "HH:mm"),
     expiry_date: config.expiry_date ? dayjs(config.expiry_date, "DD-MM-YYYY") : null,
@@ -177,6 +208,8 @@ export default function ConfigPanel() {
     );
     const payload = {
       ...values,
+      max_loss_pct: preparePercentPayload(values.max_loss_pct),
+      max_profit_pct: preparePercentPayload(values.max_profit_pct),
       trade_time_ist: values.trade_time_ist.format("HH:mm"),
       exit_time_ist: values.exit_time_ist.format("HH:mm"),
       trailing_rules: formattedTrailingRules,
@@ -357,13 +390,13 @@ export default function ConfigPanel() {
             </Form.Item>
           </Col>
           <Col span={8}>
-            <Form.Item name="max_loss_pct" label="Max Loss %">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
+            <Form.Item name="max_loss_pct" label="Max Loss (%)">
+              <InputNumber min={0} max={100} step={0.5} style={{ width: "100%" }} />
             </Form.Item>
           </Col>
           <Col span={8}>
-            <Form.Item name="max_profit_pct" label="Max Profit %">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
+            <Form.Item name="max_profit_pct" label="Max Profit (%)">
+              <InputNumber min={0} max={100} step={0.5} style={{ width: "100%" }} />
             </Form.Item>
           </Col>
         </Row>

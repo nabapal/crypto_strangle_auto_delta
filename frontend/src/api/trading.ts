@@ -62,12 +62,22 @@ export interface RuntimeTotals {
   realized: number;
   unrealized: number;
   total_pnl: number;
+  notional: number;
+  total_pnl_pct: number;
 }
 
 export interface RuntimeTrailing {
   level: number;
   max_profit_seen: number;
   enabled: boolean;
+}
+
+export interface RuntimeLimits {
+  max_profit_pct: number;
+  max_loss_pct: number;
+  effective_loss_pct: number;
+  trailing_enabled: boolean;
+  trailing_level_pct: number;
 }
 
 export interface StrategyRuntime {
@@ -81,7 +91,9 @@ export interface StrategyRuntime {
   entry: Record<string, unknown> | null;
   positions: Array<Record<string, unknown>>;
   totals: RuntimeTotals;
+  limits: RuntimeLimits;
   trailing: RuntimeTrailing;
+  exit_reason: string | null;
   config: Record<string, unknown> | null;
 }
 
