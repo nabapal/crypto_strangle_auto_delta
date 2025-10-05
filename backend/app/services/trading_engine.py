@@ -1045,6 +1045,10 @@ class TradingEngine:
             return default
 
     async def _fetch_best_prices(self, contract: OptionContract) -> tuple[float | None, float | None]:
+        if self._price_stream is not None:
+            stream_bid, stream_ask = self._price_stream.get_best_bid_ask(contract.symbol)
+            if stream_bid is not None or stream_ask is not None:
+                return stream_bid, stream_ask
         if not self._client:
             return contract.best_bid, contract.best_ask
         try:
@@ -1132,6 +1136,13 @@ class TradingEngine:
             logger.exception("Unable to fetch product info for %s", contract.symbol)
             tick_size = contract.tick_size or 0.1
 
+        stream: OptionPriceStream | None = None
+        try:
+            stream = await self._ensure_price_stream()
+            await stream.add_symbols([contract.symbol])
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to initialize price stream for %s", contract.symbol)
+
         remaining = float(quantity)
         total_filled = 0.0
         attempts: List[Dict[str, Any]] = []
@@ -1139,9 +1150,13 @@ class TradingEngine:
 
         for attempt in range(1, max_attempts + 1):
             best_bid, best_ask = await self._fetch_best_prices(contract)
-            price_candidate = best_bid if side == "buy" else best_ask
-            if price_candidate is None or price_candidate <= 0:
-                price_candidate = contract.mid_price
+            price_candidate = self._determine_limit_price(
+                side,
+                best_bid,
+                best_ask,
+                tick_size,
+                contract.mid_price,
+            )
             limit_price = self._normalize_price(price_candidate, tick_size)
             client_order_id = f"{self._state.strategy_id}-{self._option_kind(contract.contract_type)}-{uuid.uuid4().hex[:6]}-limit{attempt}"
             payload: Dict[str, Any] = {
@@ -1761,6 +1776,28 @@ class TradingEngine:
                 if mark_price is not None:
                     state.mark_prices[position.symbol] = mark_price
 
+            l1_bid = None
+            l1_ask = None
+            l1_timestamp = None
+            l1_received_at = None
+            if stream:
+                l1_bid, l1_ask = stream.get_best_bid_ask(position.symbol)
+                if l1_bid is not None:
+                    best_bid = self._to_float(l1_bid, best_bid or mark_price or position.entry_price)
+                if l1_ask is not None:
+                    best_ask = self._to_float(l1_ask, best_ask or mark_price or position.entry_price)
+                order_book_snapshot = stream.get_order_book_snapshot(position.symbol)
+                if order_book_snapshot:
+                    l1_timestamp = order_book_snapshot.get("timestamp")
+                    l1_received_at = order_book_snapshot.get("received_at")
+
+            if stream and best_bid is None and best_ask is None and (l1_bid is not None or l1_ask is not None):
+                # Ensure fallback still hydrates via order book even if quote missing
+                if l1_bid is not None:
+                    best_bid = self._to_float(l1_bid, position.entry_price)
+                if l1_ask is not None:
+                    best_ask = self._to_float(l1_ask, position.entry_price)
+
             if mark_price is None and position.exit_time is None and client:
                 try:
                     ticker = await client.get_ticker(position.symbol)
@@ -1799,6 +1836,8 @@ class TradingEngine:
                 "contract_size": position_contract_size,
                 "notional": entry_notional,
                 "updated_at": now.isoformat(),
+                "l1_timestamp": l1_timestamp,
+                "l1_received_at": l1_received_at,
             }
 
             leg_payload = {
@@ -1824,6 +1863,8 @@ class TradingEngine:
                 "entry_time": position.entry_time,
                 "exit_time": position.exit_time,
                 "trailing": position.trailing_sl_state or {},
+                "l1_timestamp": l1_timestamp,
+                "l1_received_at": l1_received_at,
             }
             positions_payload.append(self._json_ready(leg_payload))
 
@@ -1943,6 +1984,35 @@ class TradingEngine:
         except (InvalidOperation, ValueError, TypeError):
             logger.warning("Failed to quantize price %s with tick %s; falling back to 2dp", candidate, base_tick)
             return round(candidate, 2)
+
+    @staticmethod
+    def _determine_limit_price(
+        side: str,
+        best_bid: float | None,
+        best_ask: float | None,
+        tick_size: float,
+        fallback: float,
+    ) -> float:
+        price = fallback
+        tick = tick_size if tick_size and tick_size > 0 else 0.1
+        if side.lower() == "buy":
+            if best_bid is not None:
+                price = best_bid + tick
+                if best_ask is not None:
+                    price = min(price, best_ask)
+            elif best_ask is not None:
+                price = best_ask
+        else:
+            if best_ask is not None:
+                price = max(best_ask - tick, tick)
+                if best_bid is not None:
+                    price = max(price, best_bid)
+            elif best_bid is not None:
+                price = best_bid
+
+        if price <= 0:
+            price = fallback if fallback > 0 else tick
+        return price
 
     def _config_contract_size(self) -> float:
         if self._state is None:

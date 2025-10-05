@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional, Set
 
 import websockets
@@ -26,6 +27,7 @@ class OptionPriceStream:
         self._conn: WebSocketClientProtocol | None = None
         self._subscriptions: Set[str] = set()
         self._latest_quotes: Dict[str, Dict[str, Any]] = {}
+        self._order_books: Dict[str, Dict[str, Any]] = {}
         self._backoff_seconds = 1.0
 
     async def start(self) -> None:
@@ -51,6 +53,7 @@ class OptionPriceStream:
             self._subscriptions.clear()
             self._subscription_event.clear()
             self._latest_quotes.clear()
+            self._order_books.clear()
         if task:
             await asyncio.shield(task)
         self._stop_event.clear()
@@ -146,7 +149,11 @@ class OptionPriceStream:
                     {
                         "name": "v2/ticker",
                         "symbols": symbols,
-                    }
+                    },
+                    {
+                        "name": "l1ob",
+                        "symbols": symbols,
+                    },
                 ]
             },
         }
@@ -167,14 +174,32 @@ class OptionPriceStream:
         if not isinstance(payload, dict):
             return
 
+        message_type = str(payload.get("type") or "").lower()
+        if message_type.startswith("l1ob") or ("d" in payload and isinstance(payload["d"], list)):
+            self._store_order_book(payload)
+            return
+
         data = payload.get("data") or payload.get("payload") or payload.get("result")
+
+        if isinstance(data, dict):
+            data_type = str(data.get("type") or "").lower()
+            if data_type.startswith("l1ob") or ("d" in data and isinstance(data["d"], list)):
+                self._store_order_book(data)
+                return
+
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
-                    self._store_quote(item)
+                    if "d" in item and isinstance(item["d"], list):
+                        self._store_order_book(item)
+                    else:
+                        self._store_quote(item)
             return
         if isinstance(data, dict):
-            self._store_quote(data)
+            if "d" in data and isinstance(data["d"], list):
+                self._store_order_book(data)
+            else:
+                self._store_quote(data)
             return
 
         if payload.get("type") in {"error", "warning"}:
@@ -195,6 +220,44 @@ class OptionPriceStream:
         }
         self._latest_quotes[symbol] = quote
 
+    def _store_order_book(self, data: Dict[str, Any]) -> None:
+        symbol = self._normalize_symbol(data.get("s") or data.get("symbol") or data.get("product_symbol") or data.get("market"))
+        if not symbol:
+            return
+
+        raw_levels = data.get("d")
+        if not isinstance(raw_levels, (list, tuple)) or len(raw_levels) < 4:
+            return
+
+        try:
+            best_ask = float(raw_levels[0]) if raw_levels[0] is not None else None
+            best_ask_size = float(raw_levels[1]) if raw_levels[1] is not None else None
+            best_bid = float(raw_levels[2]) if raw_levels[2] is not None else None
+            best_bid_size = float(raw_levels[3]) if raw_levels[3] is not None else None
+        except (TypeError, ValueError):
+            return
+
+        order_book = {
+            "best_ask": best_ask,
+            "best_ask_size": best_ask_size,
+            "best_bid": best_bid,
+            "best_bid_size": best_bid_size,
+            "timestamp": data.get("t") or data.get("timestamp") or data.get("time"),
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._order_books[symbol] = order_book
+        logger.debug(
+            "L1 update",
+            extra={
+                "delta_symbol": symbol,
+                "delta_best_bid": best_bid,
+                "delta_best_ask": best_ask,
+                "delta_best_bid_size": best_bid_size,
+                "delta_best_ask_size": best_ask_size,
+                "delta_l1_timestamp": order_book["timestamp"],
+            },
+        )
+
     @staticmethod
     def _normalize_symbol(symbol: Optional[str]) -> str:
         return symbol.upper() if isinstance(symbol, str) else ""
@@ -205,3 +268,20 @@ class OptionPriceStream:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def get_best_bid_ask(self, symbol: str) -> tuple[float | None, float | None]:
+        norm = self._normalize_symbol(symbol)
+        book = self._order_books.get(norm)
+        if book:
+            return book.get("best_bid"), book.get("best_ask")
+        quote = self._latest_quotes.get(norm)
+        if quote:
+            return quote.get("best_bid"), quote.get("best_ask")
+        return None, None
+
+    def get_order_book_snapshot(self, symbol: str) -> Dict[str, Any] | None:
+        norm = self._normalize_symbol(symbol)
+        book = self._order_books.get(norm)
+        if book:
+            return dict(book)
+        return None

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import cast
 from unittest.mock import AsyncMock
@@ -7,6 +8,7 @@ import pytest
 
 from app.models import PositionLedger, StrategySession, TradingConfiguration
 from app.schemas.trading import TradingControlRequest
+from app.services.delta_websocket_client import OptionPriceStream
 from app.services.trading_engine import OptionContract, StrategyRuntimeState, TradingEngine
 from app.services.trading_service import TradingService
 
@@ -74,6 +76,96 @@ async def test_trading_engine_panic_close_forces_exit():
     position = session.positions[0]
     assert position.exit_time is not None
     assert session.status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_option_price_stream_records_l1_order_book():
+    stream = OptionPriceStream(url="wss://example.com")
+
+    message = json.dumps(
+        {
+            "type": "l1ob",
+            "s": "C-BTC-95000-310125",
+            "d": ["1250.5", "100", "1249.8", "150"],
+            "t": 1701157803668868,
+        }
+    )
+
+    await stream._handle_message(message)
+
+    best_bid, best_ask = stream.get_best_bid_ask("C-BTC-95000-310125")
+    assert best_bid == pytest.approx(1249.8)
+    assert best_ask == pytest.approx(1250.5)
+
+
+@pytest.mark.asyncio
+async def test_refresh_position_analytics_prefers_l1_order_book():
+    config = TradingConfiguration(name="L1 Pref", quantity=1, contract_size=1.0)
+    session = StrategySession(
+        strategy_id="l1-strategy",
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+    )
+    session.positions.append(
+        PositionLedger(
+            symbol="C-BTC-95000-310125",
+            side="short",
+            entry_price=1250.0,
+            exit_price=None,
+            quantity=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            entry_time=datetime.utcnow(),
+            exit_time=None,
+            trailing_sl_state=None,
+            analytics={},
+        )
+    )
+
+    engine = TradingEngine()
+    state = StrategyRuntimeState(strategy_id="l1-strategy", config=config, session=session)
+    state.entry_summary = {"mode": "simulation"}
+    engine._state = state
+
+    class StubStream:
+        def __init__(self):
+            self.symbols: set[str] = set()
+
+        async def set_symbols(self, symbols):
+            self.symbols = set(symbols)
+
+        def get_quote(self, symbol: str):
+            return {
+                "mark_price": 1240.0,
+                "last_price": 1241.0,
+                "best_bid": 1239.5,
+                "best_ask": 1240.5,
+            }
+
+        def get_best_bid_ask(self, symbol: str):
+            return 1249.8, 1250.5
+
+        def get_order_book_snapshot(self, symbol: str):
+            return {
+                "best_bid": 1249.8,
+                "best_ask": 1250.5,
+                "timestamp": 1701157803668868,
+                "received_at": "2025-10-05T10:00:00+00:00",
+            }
+
+    stub_stream = StubStream()
+    engine._price_stream = cast(OptionPriceStream, stub_stream)
+    engine._ensure_price_stream = AsyncMock(return_value=cast(OptionPriceStream, stub_stream))  # type: ignore[method-assign]
+
+    positions_payload, totals = await engine._refresh_position_analytics(state)
+
+    assert stub_stream.symbols == {"C-BTC-95000-310125"}
+    assert positions_payload[0]["best_bid"] == pytest.approx(1249.8)
+    assert positions_payload[0]["best_ask"] == pytest.approx(1250.5)
+    assert positions_payload[0]["l1_timestamp"] == 1701157803668868
+    assert positions_payload[0]["l1_received_at"] == "2025-10-05T10:00:00+00:00"
+    assert totals["notional"] == pytest.approx(1250.0)
 
 
 def test_select_contracts_prefers_highest_delta():
@@ -322,6 +414,118 @@ async def test_trading_service_runtime_snapshot_uses_metadata(db_session):
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 12.5
     assert snapshot["schedule"]["planned_exit_at"] == "2025-10-05T15:20:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_limit_order_uses_best_bid_plus_tick():
+    config = TradingConfiguration(name="Order Config", quantity=1, contract_size=1.0)
+    session = StrategySession(strategy_id="order-strategy", status="running", config_snapshot={})
+    session.id = 10
+
+    engine = TradingEngine()
+    engine._state = StrategyRuntimeState(strategy_id="order-strategy", config=config, session=session)
+
+    class StubStream:
+        def __init__(self):
+            self.symbols: set[str] = set()
+
+        async def add_symbols(self, symbols):
+            self.symbols.update(symbols)
+
+        def get_best_bid_ask(self, symbol: str):
+            return 1249.8, 1250.5
+
+    stub_stream = StubStream()
+    engine._price_stream = cast(OptionPriceStream, stub_stream)
+    engine._ensure_price_stream = AsyncMock(return_value=cast(OptionPriceStream, stub_stream))  # type: ignore[method-assign]
+
+    mock_client = AsyncMock()
+    mock_client.has_credentials = True
+    mock_client.get_product.return_value = {"result": {"tick_size": 0.1}}
+    mock_client.place_order.return_value = {"result": {"id": "limit-1"}}
+    mock_client.get_order.return_value = {
+        "result": {"size": 1.0, "unfilled_size": 0.0, "state": "closed"}
+    }
+    mock_client.cancel_order = AsyncMock()
+    engine._client = mock_client
+
+    contract = OptionContract(
+        symbol="C-BTC-95000-310125",
+        product_id=123,
+        delta=0.12,
+        strike_price=95000,
+        expiry="310125",
+        expiry_date=datetime.utcnow().date(),
+        best_bid=1249.8,
+        best_ask=1250.5,
+        mark_price=1250.0,
+        tick_size=0.1,
+        contract_type="call_options",
+    )
+
+    outcome = await engine._execute_order_strategy(contract, side="buy", quantity=1.0, reduce_only=True)
+
+    order_payload = mock_client.place_order.await_args_list[0].args[0]
+    assert order_payload["limit_price"] == "1249.9"
+    assert "C-BTC-95000-310125" in stub_stream.symbols
+    assert outcome.success is True
+    assert outcome.mode == "limit_orders"
+
+
+@pytest.mark.asyncio
+async def test_limit_order_uses_best_ask_minus_tick_for_sell():
+    config = TradingConfiguration(name="Order Config", quantity=1, contract_size=1.0)
+    session = StrategySession(strategy_id="order-sell", status="running", config_snapshot={})
+    session.id = 11
+
+    engine = TradingEngine()
+    engine._state = StrategyRuntimeState(strategy_id="order-sell", config=config, session=session)
+
+    class StubStream:
+        def __init__(self):
+            self.symbols: set[str] = set()
+
+        async def add_symbols(self, symbols):
+            self.symbols.update(symbols)
+
+        def get_best_bid_ask(self, symbol: str):
+            return 1249.8, 1250.5
+
+    stub_stream = StubStream()
+    engine._price_stream = cast(OptionPriceStream, stub_stream)
+    engine._ensure_price_stream = AsyncMock(return_value=cast(OptionPriceStream, stub_stream))  # type: ignore[method-assign]
+
+    mock_client = AsyncMock()
+    mock_client.has_credentials = True
+    mock_client.get_product.return_value = {"result": {"tick_size": 0.1}}
+    mock_client.place_order.return_value = {"result": {"id": "limit-1"}}
+    mock_client.get_order.return_value = {
+        "result": {"size": 1.0, "unfilled_size": 0.0, "state": "closed"}
+    }
+    mock_client.cancel_order = AsyncMock()
+    engine._client = mock_client
+
+    contract = OptionContract(
+        symbol="P-BTC-95000-310125",
+        product_id=321,
+        delta=0.12,
+        strike_price=95000,
+        expiry="310125",
+        expiry_date=datetime.utcnow().date(),
+        best_bid=1249.8,
+        best_ask=1250.5,
+        mark_price=1250.0,
+        tick_size=0.1,
+        contract_type="put_options",
+    )
+
+    outcome = await engine._execute_order_strategy(contract, side="sell", quantity=1.0, reduce_only=False)
+
+    order_payload = mock_client.place_order.await_args_list[0].args[0]
+    assert order_payload["limit_price"] == "1250.4"
+    assert "P-BTC-95000-310125" in stub_stream.symbols
+    assert outcome.success is True
+    assert outcome.mode == "limit_orders"
 
 
 @pytest.mark.asyncio
