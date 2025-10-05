@@ -79,27 +79,37 @@ async def test_trading_engine_panic_close_forces_exit():
 
 
 @pytest.mark.asyncio
-async def test_option_price_stream_records_l1_order_book():
+async def test_option_price_stream_records_ticker_quotes():
     stream = OptionPriceStream(url="wss://example.com")
 
     message = json.dumps(
         {
-            "type": "l1ob",
-            "s": "C-BTC-95000-310125",
-            "d": ["1250.5", "100", "1249.8", "150"],
-            "t": 1701157803668868,
+            "type": "v2/ticker",
+            "symbol": "C-BTC-95000-310125",
+            "mark_price": "1240.0",
+            "last_price": "1241.0",
+            "best_bid_price": "1239.8",
+            "best_ask_price": "1240.6",
+            "best_bid_size": "95",
+            "best_ask_size": "110",
+            "timestamp": 1701157803668868,
         }
     )
 
     await stream._handle_message(message)
 
-    best_bid, best_ask = stream.get_best_bid_ask("C-BTC-95000-310125")
-    assert best_bid == pytest.approx(1249.8)
-    assert best_ask == pytest.approx(1250.5)
+    quote = stream.get_quote("C-BTC-95000-310125")
+    assert quote is not None
+    assert quote["best_bid"] == pytest.approx(1239.8)
+    assert quote["best_ask"] == pytest.approx(1240.6)
+    assert quote["mark_price"] == pytest.approx(1240.0)
+    assert quote["best_bid_size"] == pytest.approx(95)
+    assert quote["best_ask_size"] == pytest.approx(110)
+    assert quote["timestamp"] == 1701157803668868
 
 
 @pytest.mark.asyncio
-async def test_refresh_position_analytics_prefers_l1_order_book():
+async def test_refresh_position_analytics_uses_ticker_quotes():
     config = TradingConfiguration(name="L1 Pref", quantity=1, contract_size=1.0)
     session = StrategySession(
         strategy_id="l1-strategy",
@@ -139,19 +149,11 @@ async def test_refresh_position_analytics_prefers_l1_order_book():
             return {
                 "mark_price": 1240.0,
                 "last_price": 1241.0,
-                "best_bid": 1239.5,
-                "best_ask": 1240.5,
-            }
-
-        def get_best_bid_ask(self, symbol: str):
-            return 1249.8, 1250.5
-
-        def get_order_book_snapshot(self, symbol: str):
-            return {
                 "best_bid": 1249.8,
                 "best_ask": 1250.5,
+                "best_bid_size": 95,
+                "best_ask_size": 110,
                 "timestamp": 1701157803668868,
-                "received_at": "2025-10-05T10:00:00+00:00",
             }
 
     stub_stream = StubStream()
@@ -163,8 +165,9 @@ async def test_refresh_position_analytics_prefers_l1_order_book():
     assert stub_stream.symbols == {"C-BTC-95000-310125"}
     assert positions_payload[0]["best_bid"] == pytest.approx(1249.8)
     assert positions_payload[0]["best_ask"] == pytest.approx(1250.5)
-    assert positions_payload[0]["l1_timestamp"] == 1701157803668868
-    assert positions_payload[0]["l1_received_at"] == "2025-10-05T10:00:00+00:00"
+    assert positions_payload[0]["best_bid_size"] == pytest.approx(95)
+    assert positions_payload[0]["best_ask_size"] == pytest.approx(110)
+    assert positions_payload[0]["ticker_timestamp"] == 1701157803668868
     assert totals["notional"] == pytest.approx(1250.0)
 
 
@@ -377,7 +380,7 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_trading_service_runtime_snapshot_uses_metadata(db_session):
+async def test_trading_service_runtime_snapshot_skips_stale_metadata(db_session):
     config = TradingConfiguration(name="Runtime Service Config", quantity=1, contract_size=1.0)
     db_session.add(config)
     await db_session.flush()
@@ -409,10 +412,50 @@ async def test_trading_service_runtime_snapshot_uses_metadata(db_session):
     service = TradingService(db_session, engine=TradingEngine())
     snapshot = await service.runtime_snapshot()
 
+    assert snapshot["status"] == "idle"
+    assert snapshot.get("mode") is None
+    assert snapshot.get("positions") == []
+    assert snapshot["totals"]["total_pnl"] == 0.0
+    assert snapshot["schedule"]["planned_exit_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(db_session):
+    config = TradingConfiguration(name="Runtime Service Running", quantity=1, contract_size=1.0)
+    db_session.add(config)
+    await db_session.flush()
+
+    session = StrategySession(
+        strategy_id="runtime-service-running",
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+        session_metadata={
+            "runtime": {
+                "status": "live",
+                "mode": "simulation",
+                "scheduled_entry_at": "2025-10-05T09:30:00+00:00",
+                "entry": {"status": "live"},
+                "monitor": {
+                    "positions": [{"symbol": "BTC-06OCT25-58000-P", "status": "open"}],
+                    "totals": {"realized": 0.0, "unrealized": 15.0, "total_pnl": 15.0},
+                    "planned_exit_at": "2025-10-05T15:20:00+00:00",
+                    "time_to_exit_seconds": 3600.0,
+                    "generated_at": "2025-10-05T11:00:00+00:00",
+                },
+            }
+        },
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    service = TradingService(db_session, engine=TradingEngine())
+    snapshot = await service.runtime_snapshot()
+
     assert snapshot["status"] == "live"
     assert snapshot["mode"] == "simulation"
     assert snapshot["positions"]
-    assert snapshot["totals"]["total_pnl"] == 12.5
+    assert snapshot["totals"]["total_pnl"] == 15.0
     assert snapshot["schedule"]["planned_exit_at"] == "2025-10-05T15:20:00+00:00"
 
 

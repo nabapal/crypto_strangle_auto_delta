@@ -56,6 +56,24 @@ Flip on verbose HTTP tracing when you need to inspect every call between the das
 
 Turn the flags back to `false` once you're done to avoid noisy logs in production.
 
+### Webhook / L1 Stream Tester
+
+Use `scripts/test_webhook_l1.py` to watch the live best bid/ask feed coming from Delta's websocket. The helper bootstraps the same `OptionPriceStream` used by the trading engine, making it easy to validate webhook data outside the service loop.
+
+```bash
+python scripts/test_webhook_l1.py \
+	--symbols C-BTC-95000-310125 P-BTC-95000-310125 \
+	--duration 30 \
+	--interval 0.5
+```
+
+- `--symbols` (required): one or more option symbols to subscribe to.
+- `--duration`: seconds to stream before exiting (`<=0` runs until <kbd>Ctrl+C</kbd>).
+- `--interval`: print frequency in seconds (default `1.0`).
+- `--url`: override the websocket endpoint if you need testnet or a proxy.
+
+Logged rows include current best bid/ask, sizes, and the raw L1 timestamp/receipt time to help diagnose stale data.
+
 ## Documentation
 
 - [Live Control Telemetry & UX Enhancement Plan](docs/live-control-enhancement-plan.md)

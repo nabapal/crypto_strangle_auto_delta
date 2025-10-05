@@ -89,13 +89,22 @@ const formatPercent = (value: unknown, maximumFractionDigits = 2) => {
   });
 };
 
-const formatDateTime = (value?: string | null) => {
-  if (!value) return "--";
+const parseTimestamp = (value?: string | null): Date | null => {
+  if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+};
+
+const formatDateTime = (value?: string | null) => {
+  if (!value) return "--";
+  const parsed = parseTimestamp(value);
+  if (!parsed) {
     return value;
   }
-  return date.toLocaleString();
+  return parsed.toLocaleString();
 };
 
 const formatDuration = (seconds?: number | null) => {
@@ -114,6 +123,20 @@ const formatDuration = (seconds?: number | null) => {
     return `${sign}${minutes}m ${secs}s`;
   }
   return `${sign}${secs}s`;
+};
+
+const formatDelayFromTimestamp = (value?: string | null) => {
+  const parsed = parseTimestamp(value);
+  if (!parsed) return null;
+  const diffSeconds = (Date.now() - parsed.getTime()) / 1000;
+  if (!Number.isFinite(diffSeconds)) {
+    return null;
+  }
+  const durationLabel = formatDuration(Math.abs(diffSeconds));
+  if (durationLabel === "--") {
+    return null;
+  }
+  return diffSeconds >= 0 ? `${durationLabel} ago` : `in ${durationLabel}`;
 };
 
 const toDisplay = (value: unknown, fallback = "--") => {
@@ -544,6 +567,12 @@ export default function TradingControlPanel() {
                     const filledSize = (leg.filled_size as number | undefined) ?? (leg.size as number | undefined) ?? 0;
                     const legSide = toDisplay(leg.side, "");
                     const legMode = toDisplay(leg.order_mode, "");
+                    const limitPriceValue = Number(leg.filled_limit_price ?? Number.NaN);
+                    const hasLimitPrice = Number.isFinite(limitPriceValue);
+                    const fillPriceValue = Number(leg.filled_price ?? Number.NaN);
+                    const hasFillPrice = Number.isFinite(fillPriceValue);
+                    const showFillPrice =
+                      hasFillPrice && (!hasLimitPrice || Math.abs(fillPriceValue - limitPriceValue) > 1e-6);
                     return (
                       <List.Item key={`${leg.order_id ?? index}`}>
                         <Space wrap>
@@ -551,6 +580,12 @@ export default function TradingControlPanel() {
                           {legSide && <Tag>{legSide.toUpperCase()}</Tag>}
                           {legMode && <Tag color="purple">{legMode.toUpperCase()}</Tag>}
                           <Text type="secondary">Filled {formatNumber(filledSize, 0, 4)} contracts</Text>
+                          {hasLimitPrice && (
+                            <Text type="secondary">
+                              Limit ${formatNumber(limitPriceValue, 2, 4)}
+                              {showFillPrice ? ` · Fill ${formatNumber(fillPriceValue, 2, 4)}` : ""}
+                            </Text>
+                          )}
                           {Array.isArray(leg.attempts) && leg.attempts.length > 0 && (
                             <Text type="secondary">{leg.attempts.length} attempts</Text>
                           )}
@@ -590,6 +625,14 @@ export default function TradingControlPanel() {
                 const side = toDisplay(position?.side ?? position?.direction ?? "").toLowerCase();
                 const entryPrice = Number(position?.entry_price ?? Number.NaN);
                 const tolerance = 1e-6;
+                const markTimestampRaw =
+                  (position?.mark_timestamp as string | undefined) ??
+                  (position?.ticker_timestamp as string | undefined) ??
+                  (position?.updated_at as string | undefined);
+                const markTimestampLabelRaw = markTimestampRaw ? formatDateTime(markTimestampRaw) : null;
+                const markTimestampLabel =
+                  markTimestampLabelRaw && markTimestampLabelRaw !== "--" ? markTimestampLabelRaw : null;
+                const markDelayLabel = markTimestampRaw ? formatDelayFromTimestamp(markTimestampRaw) : null;
 
                 const derivedPnl = (() => {
                   if (Math.abs(rawTotalPnl) > tolerance) {
@@ -634,6 +677,8 @@ export default function TradingControlPanel() {
                       <Text type="secondary">
                         Entry ${formatNumber(position.entry_price, 2, 2)} · Size {formatNumber(positionSize, 0, 4)}
                         {hasMarkPrice && ` · Mark ${formatNumber(markPriceValue, 2, 2)}`}
+                        {hasMarkPrice && markTimestampLabel && ` @ ${markTimestampLabel}`}
+                        {hasMarkPrice && markDelayLabel && ` (${markDelayLabel})`}
                         {position.exit_price !== null && ` · Exit ${formatNumber(position.exit_price, 2, 2)}`}
                       </Text>
                       <Progress

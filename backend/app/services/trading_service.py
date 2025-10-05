@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,16 +105,19 @@ class TradingService:
                     "planned_exit_at": None,
                     "time_to_exit_seconds": None,
                 }
-                runtime_meta = (latest.session_metadata or {}).get("runtime") if latest.session_metadata else None
-                if runtime_meta:
-                    if runtime_meta.get("status") and snapshot["status"] == "idle":
-                        snapshot["status"] = runtime_meta.get("status")
-                    if runtime_meta.get("mode") and snapshot.get("mode") is None:
-                        snapshot["mode"] = runtime_meta.get("mode")
-                    entry_meta = runtime_meta.get("entry")
+                runtime_meta_raw = (latest.session_metadata or {}).get("runtime") if latest.session_metadata else None
+                runtime_meta = runtime_meta_raw if isinstance(runtime_meta_raw, dict) else None
+                apply_runtime_meta = runtime_meta is not None and latest.status == "running"
+                if apply_runtime_meta and runtime_meta is not None:
+                    runtime_meta_dict = cast(dict[str, Any], runtime_meta)
+                    if runtime_meta_dict.get("status") and snapshot["status"] == "idle":
+                        snapshot["status"] = runtime_meta_dict.get("status")
+                    if runtime_meta_dict.get("mode") and snapshot.get("mode") is None:
+                        snapshot["mode"] = runtime_meta_dict.get("mode")
+                    entry_meta = runtime_meta_dict.get("entry")
                     if entry_meta and snapshot.get("entry") is None:
                         snapshot["entry"] = entry_meta
-                    monitor_meta = runtime_meta.get("monitor") or {}
+                    monitor_meta = runtime_meta_dict.get("monitor") or {}
                     if monitor_meta:
                         snapshot["positions"] = snapshot.get("positions") or monitor_meta.get("positions", [])
                         snapshot["totals"] = monitor_meta.get("totals") or snapshot.get("totals")
@@ -125,10 +128,10 @@ class TradingService:
                         if schedule.get("time_to_exit_seconds") is None and monitor_meta.get("time_to_exit_seconds") is not None:
                             schedule["time_to_exit_seconds"] = monitor_meta.get("time_to_exit_seconds")
                         snapshot["generated_at"] = snapshot.get("generated_at") or monitor_meta.get("generated_at")
-                    if runtime_meta.get("scheduled_entry_at") and schedule.get("scheduled_entry_at") is None:
-                        schedule["scheduled_entry_at"] = runtime_meta.get("scheduled_entry_at")
-                    if runtime_meta.get("time_to_entry_seconds") and schedule.get("time_to_entry_seconds") is None:
-                        schedule["time_to_entry_seconds"] = runtime_meta.get("time_to_entry_seconds")
+                    if runtime_meta_dict.get("scheduled_entry_at") and schedule.get("scheduled_entry_at") is None:
+                        schedule["scheduled_entry_at"] = runtime_meta_dict.get("scheduled_entry_at")
+                    if runtime_meta_dict.get("time_to_entry_seconds") and schedule.get("time_to_entry_seconds") is None:
+                        schedule["time_to_entry_seconds"] = runtime_meta_dict.get("time_to_entry_seconds")
                 snapshot["schedule"] = schedule
             snapshot.setdefault(
                 "totals",

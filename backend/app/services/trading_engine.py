@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 import uuid
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
@@ -33,18 +34,26 @@ class OptionContract:
     strike_price: float
     expiry: str
     expiry_date: date | None
-    best_bid: float
-    best_ask: float
-    mark_price: float
+    best_bid: float | None
+    best_ask: float | None
+    mark_price: float | None
     tick_size: float
     contract_type: str
 
     @property
     def mid_price(self) -> float:
-        midpoint = (self.best_bid + self.best_ask) / 2
-        if midpoint <= 0:
+        if self.best_bid is not None and self.best_ask is not None:
+            midpoint = (self.best_bid + self.best_ask) / 2
+            if midpoint > 0:
+                return round(midpoint, 2)
+        if self.mark_price is not None and self.mark_price > 0:
             return round(self.mark_price, 2)
-        return round(midpoint, 2)
+        if self.best_bid is not None and self.best_bid > 0:
+            return round(self.best_bid, 2)
+        if self.best_ask is not None and self.best_ask > 0:
+            return round(self.best_ask, 2)
+        base_tick = self.tick_size if self.tick_size and self.tick_size > 0 else 0.1
+        return round(base_tick, 2)
 
 
 @dataclass
@@ -313,6 +322,9 @@ class TradingEngine:
                                 self._config_contract_size(),
                             ),
                             "notional": analytics.get("notional"),
+                            "ticker_timestamp": analytics.get("ticker_timestamp"),
+                            "mark_timestamp": analytics.get("ticker_timestamp")
+                            or analytics.get("updated_at"),
                         }
                     )
                 )
@@ -653,6 +665,8 @@ class TradingEngine:
                     "order_mode": outcome.mode,
                     "success": outcome.success,
                     "attempts": outcome.attempts,
+                    "filled_price": self._extract_filled_price(contract, outcome),
+                    "filled_limit_price": self._extract_filled_limit_price(contract, outcome),
                 }
                 for contract, outcome, side in live_orders
             ]
@@ -667,6 +681,8 @@ class TradingEngine:
                     "order_mode": "simulation",
                     "success": True,
                     "attempts": [],
+                    "filled_price": contract.mid_price,
+                    "filled_limit_price": contract.mid_price,
                 }
                 for contract in contracts
             ]
@@ -878,17 +894,26 @@ class TradingEngine:
             if not (delta_low <= delta <= delta_high):
                 continue
             expiry_display, expiry_dt = self._extract_expiry_metadata(ticker)
+            best_bid = self._optional_price(ticker.get("best_bid_price"))
+            if best_bid is None:
+                best_bid = self._optional_price(ticker.get("best_bid"))
+            best_ask = self._optional_price(ticker.get("best_ask_price"))
+            if best_ask is None:
+                best_ask = self._optional_price(ticker.get("best_ask"))
+            mark_price = self._optional_price(ticker.get("mark_price") or ticker.get("fair_price"))
+            tick_size_value = self._to_float(ticker.get("tick_size"), 0.1) or 0.1
+
             contract = OptionContract(
                 symbol=ticker["symbol"],
-                product_id=ticker.get("product_id", 0),
+                product_id=int(ticker.get("product_id", 0) or 0),
                 delta=delta,
-                strike_price=float(ticker.get("strike_price", 0)),
+                strike_price=self._to_float(ticker.get("strike_price"), 0.0),
                 expiry=expiry_display,
                 expiry_date=expiry_dt,
-                best_bid=float(ticker.get("best_bid_price", 0)),
-                best_ask=float(ticker.get("best_ask_price", 0)),
-                mark_price=float(ticker.get("mark_price", 0)),
-                tick_size=float(ticker.get("tick_size", 0) or 0),
+                best_bid=best_bid,
+                best_ask=best_ask,
+                mark_price=mark_price,
+                tick_size=tick_size_value,
                 contract_type=ticker.get("contract_type", "call_options"),
             )
             filtered.append(contract)
@@ -1048,7 +1073,10 @@ class TradingEngine:
         if self._price_stream is not None:
             stream_bid, stream_ask = self._price_stream.get_best_bid_ask(contract.symbol)
             if stream_bid is not None or stream_ask is not None:
-                return stream_bid, stream_ask
+                bid_value = self._optional_price(stream_bid)
+                ask_value = self._optional_price(stream_ask)
+                if bid_value is not None or ask_value is not None:
+                    return bid_value, ask_value
         if not self._client:
             return contract.best_bid, contract.best_ask
         try:
@@ -1060,10 +1088,10 @@ class TradingEngine:
             return contract.best_bid, contract.best_ask
 
         result = ticker_response.get("result") or ticker_response.get("data") or {}
-        best_bid = result.get("best_bid_price") or result.get("best_bid")
-        best_ask = result.get("best_ask_price") or result.get("best_ask")
-        bid_value = self._to_float(best_bid, contract.best_bid)
-        ask_value = self._to_float(best_ask, contract.best_ask)
+        best_bid = self._optional_price(result.get("best_bid_price") or result.get("best_bid"))
+        best_ask = self._optional_price(result.get("best_ask_price") or result.get("best_ask"))
+        bid_value = best_bid if best_bid is not None else contract.best_bid
+        ask_value = best_ask if best_ask is not None else contract.best_ask
         return bid_value, ask_value
 
     async def _wait_for_fill_or_timeout(
@@ -1447,6 +1475,10 @@ class TradingEngine:
             return None
 
         expiry_display, expiry_dt = self._extract_expiry_metadata(result)
+        best_bid = self._optional_price(result.get("best_bid_price") or result.get("best_bid"))
+        best_ask = self._optional_price(result.get("best_ask_price") or result.get("best_ask"))
+        mark_price = self._optional_price(result.get("mark_price") or result.get("fair_price"))
+        tick_size_value = self._to_float(result.get("tick_size"), 0.1) or 0.1
         return OptionContract(
             symbol=symbol,
             product_id=int(product_id),
@@ -1454,10 +1486,10 @@ class TradingEngine:
             strike_price=self._to_float(result.get("strike_price"), 0.0),
             expiry=expiry_display or symbol,
             expiry_date=expiry_dt,
-            best_bid=self._to_float(result.get("best_bid_price") or result.get("best_bid"), 0.0),
-            best_ask=self._to_float(result.get("best_ask_price") or result.get("best_ask"), 0.0),
-            mark_price=self._to_float(result.get("mark_price"), 0.0),
-            tick_size=self._to_float(result.get("tick_size"), 0.1),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mark_price=mark_price,
+            tick_size=tick_size_value,
             contract_type=result.get("contract_type") or ("put_options" if "-P" in symbol or symbol.endswith("P") else "call_options"),
         )
 
@@ -1760,6 +1792,9 @@ class TradingEngine:
             last_price = analytics_snapshot.get("last_price")
             best_bid = analytics_snapshot.get("best_bid")
             best_ask = analytics_snapshot.get("best_ask")
+            best_bid_size = analytics_snapshot.get("best_bid_size")
+            best_ask_size = analytics_snapshot.get("best_ask_size")
+            ticker_timestamp = analytics_snapshot.get("ticker_timestamp")
             entry_notional = abs(position.entry_price * quantity * position_contract_size)
             total_notional += entry_notional
 
@@ -1773,30 +1808,15 @@ class TradingEngine:
                     best_bid = self._to_float(quote["best_bid"], best_bid or mark_price or position.entry_price)
                 if quote.get("best_ask") is not None:
                     best_ask = self._to_float(quote["best_ask"], best_ask or mark_price or position.entry_price)
+                if quote.get("best_bid_size") is not None:
+                    default_bid_size = float(best_bid_size) if isinstance(best_bid_size, (int, float)) else 0.0
+                    best_bid_size = self._to_float(quote["best_bid_size"], default_bid_size)
+                if quote.get("best_ask_size") is not None:
+                    default_ask_size = float(best_ask_size) if isinstance(best_ask_size, (int, float)) else 0.0
+                    best_ask_size = self._to_float(quote["best_ask_size"], default_ask_size)
+                ticker_timestamp = quote.get("timestamp") or quote.get("time") or quote.get("server_time") or ticker_timestamp
                 if mark_price is not None:
                     state.mark_prices[position.symbol] = mark_price
-
-            l1_bid = None
-            l1_ask = None
-            l1_timestamp = None
-            l1_received_at = None
-            if stream:
-                l1_bid, l1_ask = stream.get_best_bid_ask(position.symbol)
-                if l1_bid is not None:
-                    best_bid = self._to_float(l1_bid, best_bid or mark_price or position.entry_price)
-                if l1_ask is not None:
-                    best_ask = self._to_float(l1_ask, best_ask or mark_price or position.entry_price)
-                order_book_snapshot = stream.get_order_book_snapshot(position.symbol)
-                if order_book_snapshot:
-                    l1_timestamp = order_book_snapshot.get("timestamp")
-                    l1_received_at = order_book_snapshot.get("received_at")
-
-            if stream and best_bid is None and best_ask is None and (l1_bid is not None or l1_ask is not None):
-                # Ensure fallback still hydrates via order book even if quote missing
-                if l1_bid is not None:
-                    best_bid = self._to_float(l1_bid, position.entry_price)
-                if l1_ask is not None:
-                    best_ask = self._to_float(l1_ask, position.entry_price)
 
             if mark_price is None and position.exit_time is None and client:
                 try:
@@ -1809,6 +1829,13 @@ class TradingEngine:
                     last_price = self._to_float(result.get("last_price"), last_price or mark_price or position.entry_price)
                     best_bid = self._to_float(result.get("best_bid_price") or result.get("best_bid"), best_bid or mark_price or position.entry_price)
                     best_ask = self._to_float(result.get("best_ask_price") or result.get("best_ask"), best_ask or mark_price or position.entry_price)
+                    if result.get("best_bid_size") is not None:
+                        default_bid_size = float(best_bid_size) if isinstance(best_bid_size, (int, float)) else 0.0
+                        best_bid_size = self._to_float(result.get("best_bid_size"), default_bid_size)
+                    if result.get("best_ask_size") is not None:
+                        default_ask_size = float(best_ask_size) if isinstance(best_ask_size, (int, float)) else 0.0
+                        best_ask_size = self._to_float(result.get("best_ask_size"), default_ask_size)
+                    ticker_timestamp = ticker_timestamp or result.get("timestamp")
                     if mark_price is not None:
                         state.mark_prices[position.symbol] = mark_price
 
@@ -1831,13 +1858,14 @@ class TradingEngine:
                 "last_price": last_price,
                 "best_bid": best_bid,
                 "best_ask": best_ask,
+                "best_bid_size": best_bid_size,
+                "best_ask_size": best_ask_size,
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
                 "contract_size": position_contract_size,
                 "notional": entry_notional,
                 "updated_at": now.isoformat(),
-                "l1_timestamp": l1_timestamp,
-                "l1_received_at": l1_received_at,
+                "ticker_timestamp": ticker_timestamp,
             }
 
             leg_payload = {
@@ -1857,14 +1885,16 @@ class TradingEngine:
                 "last_price": last_price,
                 "best_bid": best_bid,
                 "best_ask": best_ask,
+                "best_bid_size": best_bid_size,
+                "best_ask_size": best_ask_size,
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
                 "notional": entry_notional,
                 "entry_time": position.entry_time,
                 "exit_time": position.exit_time,
                 "trailing": position.trailing_sl_state or {},
-                "l1_timestamp": l1_timestamp,
-                "l1_received_at": l1_received_at,
+                "ticker_timestamp": ticker_timestamp,
+                "mark_timestamp": ticker_timestamp or analytics_snapshot.get("updated_at"),
             }
             positions_payload.append(self._json_ready(leg_payload))
 
@@ -1984,6 +2014,71 @@ class TradingEngine:
         except (InvalidOperation, ValueError, TypeError):
             logger.warning("Failed to quantize price %s with tick %s; falling back to 2dp", candidate, base_tick)
             return round(candidate, 2)
+
+    @staticmethod
+    def _optional_price(value: Any) -> float | None:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(numeric) or numeric <= 0:
+            return None
+        return numeric
+
+    def _extract_filled_limit_price(self, contract: OptionContract, outcome: OrderStrategyOutcome) -> float | None:
+        final_status = outcome.final_status or {}
+        candidates = (
+            final_status.get("limit_price"),
+            final_status.get("price"),
+        )
+        for candidate in candidates:
+            price = self._optional_price(candidate)
+            if price is not None:
+                return price
+
+        for attempt in reversed(outcome.attempts):
+            order_type = str(attempt.get("order_type") or "").lower()
+            if order_type != "limit":
+                continue
+            filled_amount = self._to_float(attempt.get("filled_amount"), 0.0)
+            if filled_amount <= 0:
+                continue
+            price = self._optional_price(attempt.get("price"))
+            if price is not None:
+                return price
+
+        for attempt in reversed(outcome.attempts):
+            order_type = str(attempt.get("order_type") or "").lower()
+            if order_type != "limit":
+                continue
+            price = self._optional_price(attempt.get("price"))
+            if price is not None:
+                return price
+
+        return self._optional_price(contract.mid_price)
+
+    def _extract_filled_price(self, contract: OptionContract, outcome: OrderStrategyOutcome) -> float | None:
+        final_status = outcome.final_status or {}
+        candidates = (
+            final_status.get("average_price"),
+            final_status.get("average_fill_price"),
+            final_status.get("price"),
+            final_status.get("limit_price"),
+        )
+        for candidate in candidates:
+            price = self._optional_price(candidate)
+            if price is not None:
+                return price
+
+        for attempt in reversed(outcome.attempts):
+            filled_amount = self._to_float(attempt.get("filled_amount"), 0.0)
+            if filled_amount <= 0:
+                continue
+            price = self._optional_price(attempt.get("price"))
+            if price is not None:
+                return price
+
+        return self._optional_price(contract.mid_price)
 
     @staticmethod
     def _determine_limit_price(
