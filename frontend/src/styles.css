@@ -1,0 +1,22 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Inter", sans-serif;
+  background: #0f172a;
+}
+
+body {
+  margin: 0;
+  background: #f5f7fb;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.config-row-selected td {
+  background: #e0f2fe !important;
+}
+
+.config-row-active td {
+  background: #f0fdfa !important;
+}

@@ -1,0 +1,30 @@
+[project]
+name = "delta-strangle-backend"
+version = "0.1.0"
+description = "API backend for Delta Exchange short strangle control plane"
+requires-python = ">=3.11"
+authors = [{ name = "Delta Automation Team", email = "trading@example.com" }]
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19",
+    "httpx[http2]>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

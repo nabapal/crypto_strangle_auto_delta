@@ -1,0 +1,28 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Test & coverage outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Local data
+backend/delta_trader.db
+delta_trader.db
+data/
+
+# Local environment & logs
+.env
+logs/
+
+# IDE/editor
+.vscode/
+.idea/
+.DS_Store
