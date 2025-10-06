@@ -25,12 +25,16 @@ class StrategySessionSummary(BaseModel):
     deactivated_at: Optional[datetime]
     pnl_summary: dict | None = None
     session_metadata: dict | None = None
+    exit_reason: Optional[str] = None
+    legs_summary: list[dict] | None = None
 
 
 class StrategySessionDetail(StrategySessionSummary):
     config_snapshot: dict | None = None
     orders: list[dict]
     positions: list[dict]
+    summary: dict | None = None
+    monitor_snapshot: dict | None = None
 
 
 class OrderLedgerRecord(BaseModel):

@@ -26,8 +26,17 @@ export interface TradingSessionSummary {
   status: string;
   activated_at?: string | null;
   deactivated_at?: string | null;
-  pnl_summary?: Record<string, number> | null;
+  pnl_summary?: Record<string, unknown> | null;
   session_metadata?: Record<string, unknown> | null;
+  exit_reason?: string | null;
+  legs_summary?: Array<Record<string, unknown>> | null;
+}
+
+export interface TradingSessionDetail extends TradingSessionSummary {
+  summary?: Record<string, unknown> | null;
+  monitor_snapshot?: Record<string, unknown> | null;
+  orders: Array<Record<string, unknown>>;
+  positions: Array<Record<string, unknown>>;
 }
 
 export interface TradingControlResult {
@@ -133,6 +142,11 @@ export const controlTrading = async (action: TradingControlAction, configuration
 
 export const fetchTradingSessions = async () => {
   const response = await client.get<TradingSessionSummary[]>("/trading/sessions");
+  return response.data;
+};
+
+export const fetchTradingSessionDetail = async (sessionId: number) => {
+  const response = await client.get<TradingSessionDetail>(`/trading/sessions/${sessionId}`);
   return response.data;
 };
 

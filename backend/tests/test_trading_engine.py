@@ -6,11 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.models import PositionLedger, StrategySession, TradingConfiguration
+from app.models import PositionLedger, StrategySession, TradingConfiguration, TradeAnalyticsSnapshot
 from app.schemas.trading import TradingControlRequest
 from app.services.delta_websocket_client import OptionPriceStream
 from app.services.trading_engine import OptionContract, StrategyRuntimeState, TradingEngine
 from app.services.trading_service import TradingService
+from app.services.analytics_service import AnalyticsService
 
 
 @pytest.mark.asyncio
@@ -76,6 +77,14 @@ async def test_trading_engine_panic_close_forces_exit():
     position = session.positions[0]
     assert position.exit_time is not None
     assert session.status == "stopped"
+    assert session.pnl_summary is not None
+    assert session.pnl_summary["exit_reason"] == "panic_close"
+    metadata = session.session_metadata or {}
+    summary_meta = metadata.get("summary") or {}
+    assert summary_meta.get("exit_reason") == "panic_close"
+    legs = summary_meta.get("legs") or []
+    assert len(legs) == 1
+    assert pytest.approx(legs[0]["realized_pnl"], abs=1e-6) == 0.0
 
 
 @pytest.mark.asyncio
@@ -620,3 +629,61 @@ def test_compute_exit_time_rolls_to_next_day(monkeypatch):
     exit_local = exit_time.astimezone(engine_module.IST)
     expected_date = (FixedDateTime.now(engine_module.IST).date() + timedelta(days=1))
     assert exit_local.date() == expected_date
+
+
+@pytest.mark.asyncio
+async def test_record_session_snapshot_persists_metrics(db_session):
+    now = datetime.utcnow()
+    summary_payload = {
+        "generated_at": now.isoformat(),
+        "exit_reason": "max_profit",
+        "legs": [
+            {
+                "symbol": "C-BTC-TEST",
+                "side": "short",
+                "entry_price": 100.0,
+                "exit_price": 90.0,
+                "quantity": 1.0,
+                "contract_size": 1.0,
+                "realized_pnl": 10.0,
+                "pnl_pct": 10.0,
+                "entry_time": now.isoformat(),
+                "exit_time": now.isoformat(),
+            }
+        ],
+        "totals": {
+            "realized": 10.0,
+            "unrealized": 0.0,
+            "total_pnl": 10.0,
+            "notional": 100.0,
+            "total_pnl_pct": 10.0,
+        },
+        "pnl_history": [{"timestamp": now.isoformat(), "pnl": 10.0}],
+    }
+
+    session = StrategySession(
+        strategy_id="snapshot-strategy",
+        status="stopped",
+        activated_at=now,
+        deactivated_at=now,
+        config_snapshot={},
+        pnl_summary={
+            "realized": 10.0,
+            "unrealized": 0.0,
+            "total": 10.0,
+            "total_pnl": 10.0,
+            "exit_reason": "max_profit",
+        },
+        session_metadata={"summary": summary_payload},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    analytics = AnalyticsService(db_session)
+    snapshot = await analytics.record_session_snapshot(session)
+    await db_session.flush()
+
+    assert snapshot.id is not None
+    assert snapshot.kpis[0]["label"] == "Realized PnL"
+    assert snapshot.kpis[0]["value"] == pytest.approx(10.0)
+    assert snapshot.chart_data["pnl"][0]["pnl"] == pytest.approx(10.0)

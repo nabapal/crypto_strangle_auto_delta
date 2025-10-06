@@ -1,11 +1,69 @@
 import { useQuery } from "@tanstack/react-query";
-import { Card, Col, Row, Typography } from "antd";
+import { Card, Col, Divider, Empty, Row, Space, Tag, Typography } from "antd";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import { fetchAnalytics } from "../api/trading";
+import { AnalyticsKpi, fetchAnalytics } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
 
 const { Title, Text } = Typography;
+
+const currencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2
+});
+
+const numberFormatter = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 0
+});
+
+const formatKpiValue = (kpi: AnalyticsKpi) => {
+  const { value, unit } = kpi;
+  if (Number.isNaN(value) || value === null || value === undefined) {
+    return "–";
+  }
+
+  const normalizedUnit = unit?.toLowerCase() ?? "";
+
+  if (normalizedUnit === "usd") {
+    return currencyFormatter.format(value);
+  }
+
+  if (normalizedUnit.includes("pct")) {
+    return `${value.toFixed(2)}%`;
+  }
+
+  return numberFormatter.format(value);
+};
+
+const renderTrendTag = (trend?: number | null) => {
+  if (trend === null || trend === undefined || Number.isNaN(trend)) {
+    return null;
+  }
+
+  const prefix = trend > 0 ? "+" : "";
+  const color = trend > 0 ? "green" : trend < 0 ? "volcano" : "geekblue";
+
+  return <Tag color={color}>{`${prefix}${trend.toFixed(2)}% vs previous`}</Tag>;
+};
+
+const formatTimestamp = (value?: string) => {
+  if (!value) {
+    return "Unavailable";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unavailable";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
+};
 
 export default function AnalyticsDashboard() {
   const { data, isLoading } = useQuery({
@@ -15,35 +73,91 @@ export default function AnalyticsDashboard() {
     ...sharedQueryOptions
   });
 
+  const kpis = data?.kpis ?? [];
+  const netKpi = kpis.find((kpi) => kpi.label.toLowerCase().includes("net"));
+  const secondaryKpis = netKpi ? kpis.filter((kpi) => kpi !== netKpi) : kpis;
+
+  const netPositive = (netKpi?.value ?? 0) >= 0;
+  const netCardStyle = {
+    background: netPositive ? "#022c22" : "#450a0a",
+    color: netPositive ? "#d1fae5" : "#fee2e2"
+  };
+
+  const kpiCardStyle = {
+    background: "#0f172a",
+    color: "#f8fafc"
+  };
+
+  const hasAnalytics = kpis.length > 0 || (data?.chart_data?.pnl?.length ?? 0) > 0;
+
   return (
     <Card title={<Title level={4}>Advanced Analytics</Title>} loading={isLoading}>
-      <Row gutter={24}>
-        {data?.kpis.map((kpi) => (
-          <Col span={8} key={kpi.label}>
-            <Card bordered={false} style={{ background: "#0f172a", color: "#f8fafc" }}>
-              <Text type="secondary">{kpi.label}</Text>
-              <Title level={2} style={{ color: "#f8fafc" }}>
-                {kpi.unit === "USD" ? "$" : ""}
-                {kpi.value.toFixed(2)}
-              </Title>
-              {kpi.trend && <Text type={kpi.trend > 0 ? "success" : "danger"}>{kpi.trend}% vs previous</Text>}
-            </Card>
-          </Col>
-        ))}
-      </Row>
-      <Row style={{ marginTop: 24 }}>
-        <Col span={24}>
-          <Title level={5}>PnL Momentum</Title>
-          <ResponsiveContainer width="100%" height={320}>
-            <LineChart data={data?.chart_data.pnl ?? []}>
-              <XAxis dataKey="timestamp" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Line type="monotone" dataKey="pnl" stroke="#0ea5e9" strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Col>
-      </Row>
+      {!isLoading && !hasAnalytics && <Empty description="No analytics snapshots yet" />} 
+      {hasAnalytics && (
+        <Space direction="vertical" size={24} style={{ width: "100%" }}>
+          <Row justify="space-between" align="middle">
+            <Col>
+              <Text type="secondary">Snapshot generated</Text>
+              <div>
+                <Tag color="geekblue">{formatTimestamp(data?.generated_at)}</Tag>
+              </div>
+            </Col>
+            <Col>
+              <Text type="secondary">Auto-refreshing every 5s</Text>
+            </Col>
+          </Row>
+
+          {netKpi && (
+            <Row>
+              <Col span={24}>
+                <Card bordered={false} style={netCardStyle}>
+                  <Space direction="vertical" size={8}>
+                    <Text style={{ color: "inherit" }}>{netKpi.label}</Text>
+                    <Title level={1} style={{ color: "inherit", margin: 0 }}>
+                      {formatKpiValue(netKpi)}
+                    </Title>
+                    {renderTrendTag(netKpi.trend)}
+                  </Space>
+                </Card>
+              </Col>
+            </Row>
+          )}
+
+          {secondaryKpis.length > 0 && (
+            <Row gutter={[24, 24]}>
+              {secondaryKpis.map((kpi) => (
+                <Col xs={24} md={12} key={kpi.label}>
+                  <Card bordered={false} style={kpiCardStyle}>
+                    <Space direction="vertical" size={4}>
+                      <Text style={{ color: "#cbd5f5" }}>{kpi.label}</Text>
+                      <Title level={3} style={{ color: "#f8fafc", margin: 0 }}>
+                        {formatKpiValue(kpi)}
+                      </Title>
+                      {renderTrendTag(kpi.trend)}
+                    </Space>
+                  </Card>
+                </Col>
+              ))}
+            </Row>
+          )}
+
+          <Divider style={{ borderColor: "#1f2937" }} />
+
+          <Row>
+            <Col span={24}>
+              <Title level={5}>PnL Momentum</Title>
+              <ResponsiveContainer width="100%" height={320}>
+                <LineChart data={data?.chart_data.pnl ?? []}>
+                  <XAxis dataKey="timestamp" tick={{ fontSize: 12 }} />
+                  <YAxis tick={{ fontSize: 12 }} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="pnl" stroke="#0ea5e9" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </Col>
+          </Row>
+        </Space>
+      )}
     </Card>
   );
 }

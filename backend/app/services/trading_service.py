@@ -12,6 +12,7 @@ from fastapi.encoders import jsonable_encoder
 
 from ..models import StrategySession, TradingConfiguration
 from ..schemas.trading import TradingControlRequest
+from .analytics_service import AnalyticsService
 from .trading_engine import TradingEngine
 
 logger = logging.getLogger(__name__)
@@ -170,12 +171,14 @@ class TradingService:
         return session
 
     async def _mark_session_stopped(self) -> None:
-        stmt = select(StrategySession).where(StrategySession.status == "running")
+        stmt = select(StrategySession).order_by(StrategySession.activated_at.desc())
         result = await self.session.execute(stmt)
         session = result.scalars().first()
         if session:
-            session.status = "stopped"
-            session.deactivated_at = datetime.utcnow()
+            if session.status != "stopped":
+                session.status = "stopped"
+            session.deactivated_at = session.deactivated_at or datetime.utcnow()
+            await self._capture_analytics_snapshot(session)
             await self.session.flush()
 
     def _config_snapshot(self, config: TradingConfiguration) -> dict:
@@ -186,3 +189,11 @@ class TradingService:
     def _session_metadata(self, config: TradingConfiguration) -> dict:
         metadata = {"config_id": config.id}
         return jsonable_encoder(metadata, custom_encoder={datetime: lambda v: v.isoformat()})
+
+    async def _capture_analytics_snapshot(self, session: StrategySession) -> None:
+        metadata = session.session_metadata or {}
+        summary = metadata.get("summary")
+        if not summary and not session.pnl_summary:
+            return
+        service = AnalyticsService(self.session)
+        await service.record_session_snapshot(session)

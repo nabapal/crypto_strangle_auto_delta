@@ -104,7 +104,7 @@ class TradingEngine:
             numeric = float(value)
         except (TypeError, ValueError):
             return 0.0
-        if 0 < numeric <= 1:
+        if 0 < numeric < 1:
             return numeric * 100
         return numeric
 
@@ -475,7 +475,11 @@ class TradingEngine:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Strategy loop failed: %s", exc)
         finally:
-            await self._cleanup()
+            try:
+                await self._cleanup()
+            finally:
+                self._task = None
+                self._state = None
 
     def _ready_for_entry(self, current_time: datetime) -> bool:
         state = self._state
@@ -781,6 +785,8 @@ class TradingEngine:
                     "exit_triggered_at": snapshot_time,
                 },
             )
+            if not self._stop_event.is_set():
+                self._stop_event.set()
 
     async def _force_exit(self) -> None:
         state = self._state
@@ -801,13 +807,8 @@ class TradingEngine:
                     },
                 )
 
-        for position in state.session.positions:
-            if position.exit_time is None:
-                position.exit_time = datetime.now(UTC)
-                position.exit_price = position.exit_price or position.entry_price
-                position.realized_pnl = position.realized_pnl or 0.0
-                position.unrealized_pnl = 0.0
-        state.session.status = "stopped"
+        reason = state.exit_reason or "forced_exit"
+        self._finalize_session_summary(state, reason)
 
     def _check_exit_conditions(self) -> Optional[str]:
         state = self._state
@@ -1952,6 +1953,140 @@ class TradingEngine:
         if notional <= 0:
             return 0.0
         return (pnl_abs / notional) * 100
+
+    def _finalize_session_summary(self, state: StrategyRuntimeState, reason: str | None) -> dict[str, Any]:
+        reason = reason or state.exit_reason or "unknown"
+        now = datetime.now(UTC)
+        default_contract_size = self._config_contract_size()
+
+        legs: list[dict[str, Any]] = []
+        total_realized = 0.0
+        total_unrealized = 0.0
+        total_notional = 0.0
+
+        for position in state.session.positions:
+            quantity = abs(self._to_float(position.quantity, 0.0))
+            if quantity <= 0:
+                continue
+
+            analytics_snapshot = dict(position.analytics or {})
+            contract_size = self._to_float(analytics_snapshot.get("contract_size"), default_contract_size)
+            if contract_size <= 0:
+                contract_size = default_contract_size
+
+            exit_price_value = position.exit_price
+            if exit_price_value is None or exit_price_value <= 0:
+                fallback_price = state.mark_prices.get(position.symbol) or analytics_snapshot.get("mark_price")
+                exit_price_value = self._to_float(fallback_price, position.entry_price)
+            if exit_price_value <= 0:
+                exit_price_value = position.entry_price
+
+            if position.exit_time is None:
+                position.exit_time = now
+            position.exit_price = exit_price_value
+
+            realized_pnl = self._calculate_realized_pnl(position, exit_price_value)
+            position.realized_pnl = realized_pnl
+            position.unrealized_pnl = 0.0
+
+            pnl_pct = self._calculate_pnl_pct(position, realized_pnl, contract_size)
+            analytics_snapshot.update(
+                {
+                    "mark_price": analytics_snapshot.get("mark_price") or exit_price_value,
+                    "final_mark_price": exit_price_value,
+                    "pnl_abs": realized_pnl,
+                    "pnl_pct": pnl_pct,
+                    "close_reason": reason,
+                    "updated_at": now.isoformat(),
+                }
+            )
+            if position.entry_time:
+                analytics_snapshot.setdefault("entry_time", self._serialize_datetime(position.entry_time))
+            analytics_snapshot["exit_time"] = self._serialize_datetime(position.exit_time)
+            position.analytics = analytics_snapshot
+
+            leg_summary = {
+                "symbol": position.symbol,
+                "side": position.side,
+                "entry_price": position.entry_price,
+                "exit_price": exit_price_value,
+                "quantity": quantity,
+                "contract_size": contract_size,
+                "realized_pnl": realized_pnl,
+                "pnl_pct": pnl_pct,
+                "entry_time": self._serialize_datetime(position.entry_time),
+                "exit_time": self._serialize_datetime(position.exit_time),
+            }
+            legs.append(leg_summary)
+
+            total_realized += realized_pnl
+            total_notional += abs(position.entry_price * quantity * contract_size)
+
+        total_pnl = total_realized + total_unrealized
+        total_pct = (total_pnl / total_notional * 100) if total_notional > 0 else 0.0
+
+        totals = {
+            "realized": total_realized,
+            "unrealized": total_unrealized,
+            "total_pnl": total_pnl,
+            "notional": total_notional,
+            "total_pnl_pct": total_pct,
+        }
+
+        trailing_summary = {
+            "max_profit_seen": state.max_profit_seen,
+            "max_profit_seen_pct": state.max_profit_seen_pct,
+            "trailing_level_pct": state.trailing_level,
+            "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
+        }
+
+        summary = {
+            "generated_at": now.isoformat(),
+            "exit_reason": reason,
+            "legs": [self._json_ready(leg) for leg in legs],
+            "totals": self._json_ready(totals),
+            "pnl_history": [self._json_ready(item) for item in state.pnl_history],
+            "trailing": self._json_ready(trailing_summary),
+        }
+
+        state.exit_reason = reason
+        state.active = False
+        state.session.status = "stopped"
+        state.session.deactivated_at = state.session.deactivated_at or now
+        state.session.pnl_summary = {
+            "realized": totals["realized"],
+            "unrealized": totals["unrealized"],
+            "total": totals["total_pnl"],
+            "total_pnl": totals["total_pnl"],
+            "notional": totals["notional"],
+            "total_pnl_pct": totals["total_pnl_pct"],
+            "exit_reason": reason,
+            "generated_at": summary["generated_at"],
+            "max_profit_seen": trailing_summary["max_profit_seen"],
+            "max_profit_seen_pct": trailing_summary["max_profit_seen_pct"],
+            "trailing_level_pct": trailing_summary["trailing_level_pct"],
+            "trailing_enabled": trailing_summary["enabled"],
+        }
+
+        monitor_snapshot = dict(state.last_monitor_snapshot or {})
+        monitor_snapshot.update(
+            {
+                "generated_at": summary["generated_at"],
+                "exit_reason": reason,
+                "totals": totals,
+                "legs": summary["legs"],
+                "trailing": trailing_summary,
+            }
+        )
+        state.last_monitor_snapshot = monitor_snapshot
+        self._merge_session_metadata(state, {"monitor": monitor_snapshot})
+
+        metadata = dict(state.session.session_metadata or {})
+        metadata["summary"] = self._json_ready(summary)
+        metadata["legs_summary"] = summary["legs"]
+        state.session.session_metadata = metadata
+
+        return summary
 
     async def _should_skip_entry_due_to_positions(
         self, state: StrategyRuntimeState

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import StrategySession
@@ -15,6 +16,37 @@ from ..services.trading_service import TradingService
 from .deps import get_db_session
 
 router = APIRouter(prefix="/trading", tags=["trading"])
+
+
+def _safe_metadata(session_obj: StrategySession) -> dict[str, Any]:
+    raw_metadata = session_obj.session_metadata
+    return raw_metadata if isinstance(raw_metadata, dict) else {}
+
+
+def _extract_exit_reason(session_obj: StrategySession) -> str | None:
+    metadata = _safe_metadata(session_obj)
+    summary_meta = metadata.get("summary") or {}
+    runtime_meta = metadata.get("runtime") or {}
+    monitor_meta = runtime_meta.get("monitor") or {}
+    pnl_summary = session_obj.pnl_summary or {}
+    return (
+        summary_meta.get("exit_reason")
+        or monitor_meta.get("exit_reason")
+        or pnl_summary.get("exit_reason")
+    )
+
+
+def _extract_leg_summary(session_obj: StrategySession) -> list[dict] | None:
+    metadata = _safe_metadata(session_obj)
+    legs = metadata.get("legs_summary")
+    if not legs:
+        summary_meta = metadata.get("summary") or {}
+        legs = summary_meta.get("legs")
+    if not legs:
+        runtime_meta = metadata.get("runtime") or {}
+        monitor_meta = runtime_meta.get("monitor") or {}
+        legs = monitor_meta.get("legs")
+    return legs if legs else None
 
 
 @router.post("/control", response_model=TradingControlResponse)
@@ -53,6 +85,8 @@ async def list_sessions(session: AsyncSession = Depends(get_db_session)):
             deactivated_at=s.deactivated_at,
             pnl_summary=s.pnl_summary,
             session_metadata=s.session_metadata,
+            exit_reason=_extract_exit_reason(s),
+            legs_summary=_extract_leg_summary(s),
         )
         for s in sessions
     ]
@@ -63,6 +97,11 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
     result = await session.get(StrategySession, session_id)
     if not result:
         raise HTTPException(status_code=404, detail="Session not found")
+    metadata = result.session_metadata or {}
+    runtime_meta = metadata.get("runtime") or {}
+    monitor_meta = runtime_meta.get("monitor") or {}
+    summary_meta = metadata.get("summary") or {}
+    legs_summary = metadata.get("legs_summary") or summary_meta.get("legs") or monitor_meta.get("legs")
     return StrategySessionDetail(
         id=result.id,
         strategy_id=result.strategy_id,
@@ -71,6 +110,10 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
         deactivated_at=result.deactivated_at,
         pnl_summary=result.pnl_summary,
     session_metadata=result.session_metadata,
+        exit_reason=_extract_exit_reason(result),
+        legs_summary=legs_summary,
+        summary=summary_meta,
+        monitor_snapshot=monitor_meta,
         config_snapshot=result.config_snapshot,
         orders=[
             {
