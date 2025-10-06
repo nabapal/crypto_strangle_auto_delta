@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional, Set
 
 import websockets
@@ -231,10 +232,60 @@ class OptionPriceStream:
             "best_ask": self._safe_float(best_ask_price),
             "best_bid_size": self._safe_float(best_bid_size),
             "best_ask_size": self._safe_float(best_ask_size),
-            "timestamp": data.get("timestamp") or data.get("time") or data.get("server_time"),
+            "timestamp": self._normalize_timestamp(
+                data.get("timestamp") or data.get("time") or data.get("server_time")
+            ),
             "raw": data,
         }
         self._latest_quotes[symbol] = quote
+
+    @staticmethod
+    def _normalize_timestamp(value: Any) -> str | None:
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc).isoformat()
+
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            normalized = OptionPriceStream._parse_iso_timestamp(text)
+            if normalized is not None:
+                return normalized
+            try:
+                value = float(text)
+            except ValueError:
+                return None
+
+        if isinstance(value, (int, float)):
+            timestamp = float(value)
+            if not timestamp or timestamp <= 0:
+                return None
+            # Reduce to epoch seconds if the incoming value is in microseconds or milliseconds
+            if timestamp > 1_000_000_000_000_000:  # microseconds (1e15+)
+                timestamp /= 1_000_000
+            elif timestamp > 1_000_000_000_000:  # milliseconds (1e12+)
+                timestamp /= 1_000
+            try:
+                dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+            return dt.isoformat()
+
+        return None
+
+    @staticmethod
+    def _parse_iso_timestamp(text: str) -> str | None:
+        sanitized = text.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(sanitized)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
 
     @staticmethod
     def _normalize_symbol(symbol: Optional[str]) -> str:

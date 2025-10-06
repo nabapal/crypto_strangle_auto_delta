@@ -105,7 +105,7 @@ async def test_option_price_stream_records_ticker_quotes():
     assert quote["mark_price"] == pytest.approx(1240.0)
     assert quote["best_bid_size"] == pytest.approx(95)
     assert quote["best_ask_size"] == pytest.approx(110)
-    assert quote["timestamp"] == 1701157803668868
+    assert quote["timestamp"] == "2023-11-28T07:50:03.668868+00:00"
 
 
 @pytest.mark.asyncio
@@ -167,7 +167,7 @@ async def test_refresh_position_analytics_uses_ticker_quotes():
     assert positions_payload[0]["best_ask"] == pytest.approx(1250.5)
     assert positions_payload[0]["best_bid_size"] == pytest.approx(95)
     assert positions_payload[0]["best_ask_size"] == pytest.approx(110)
-    assert positions_payload[0]["ticker_timestamp"] == 1701157803668868
+    assert positions_payload[0]["ticker_timestamp"] == "2023-11-28T07:50:03.668868+00:00"
     assert totals["notional"] == pytest.approx(1250.0)
 
 
@@ -460,7 +460,7 @@ async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(d
 
 
 @pytest.mark.asyncio
-async def test_limit_order_uses_best_bid_plus_tick():
+async def test_limit_order_uses_best_ask_for_buy():
     config = TradingConfiguration(name="Order Config", quantity=1, contract_size=1.0)
     session = StrategySession(strategy_id="order-strategy", status="running", config_snapshot={})
     session.id = 10
@@ -509,14 +509,14 @@ async def test_limit_order_uses_best_bid_plus_tick():
     outcome = await engine._execute_order_strategy(contract, side="buy", quantity=1.0, reduce_only=True)
 
     order_payload = mock_client.place_order.await_args_list[0].args[0]
-    assert order_payload["limit_price"] == "1249.9"
+    assert order_payload["limit_price"] == "1250.5"
     assert "C-BTC-95000-310125" in stub_stream.symbols
     assert outcome.success is True
     assert outcome.mode == "limit_orders"
 
 
 @pytest.mark.asyncio
-async def test_limit_order_uses_best_ask_minus_tick_for_sell():
+async def test_limit_order_uses_best_bid_for_sell():
     config = TradingConfiguration(name="Order Config", quantity=1, contract_size=1.0)
     session = StrategySession(strategy_id="order-sell", status="running", config_snapshot={})
     session.id = 11
@@ -565,7 +565,7 @@ async def test_limit_order_uses_best_ask_minus_tick_for_sell():
     outcome = await engine._execute_order_strategy(contract, side="sell", quantity=1.0, reduce_only=False)
 
     order_payload = mock_client.place_order.await_args_list[0].args[0]
-    assert order_payload["limit_price"] == "1250.4"
+    assert order_payload["limit_price"] == "1249.8"
     assert "P-BTC-95000-310125" in stub_stream.symbols
     assert outcome.success is True
     assert outcome.mode == "limit_orders"

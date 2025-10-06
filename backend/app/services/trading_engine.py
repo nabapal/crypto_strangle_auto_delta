@@ -1070,29 +1070,36 @@ class TradingEngine:
             return default
 
     async def _fetch_best_prices(self, contract: OptionContract) -> tuple[float | None, float | None]:
+        stream_bid: float | None = None
+        stream_ask: float | None = None
         if self._price_stream is not None:
-            stream_bid, stream_ask = self._price_stream.get_best_bid_ask(contract.symbol)
-            if stream_bid is not None or stream_ask is not None:
-                bid_value = self._optional_price(stream_bid)
-                ask_value = self._optional_price(stream_ask)
-                if bid_value is not None or ask_value is not None:
-                    return bid_value, ask_value
-        if not self._client:
-            return contract.best_bid, contract.best_ask
-        try:
-            ticker_response = await self._client.get_ticker(contract.symbol)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Failed to refresh best bid/ask for %s", contract.symbol, extra={"strategy_id": self._state.strategy_id if self._state else None}
-            )
-            return contract.best_bid, contract.best_ask
+            raw_bid, raw_ask = self._price_stream.get_best_bid_ask(contract.symbol)
+            stream_bid = self._optional_price(raw_bid)
+            stream_ask = self._optional_price(raw_ask)
 
-        result = ticker_response.get("result") or ticker_response.get("data") or {}
-        best_bid = self._optional_price(result.get("best_bid_price") or result.get("best_bid"))
-        best_ask = self._optional_price(result.get("best_ask_price") or result.get("best_ask"))
-        bid_value = best_bid if best_bid is not None else contract.best_bid
-        ask_value = best_ask if best_ask is not None else contract.best_ask
-        return bid_value, ask_value
+        best_bid = stream_bid if stream_bid is not None else self._optional_price(contract.best_bid)
+        best_ask = stream_ask if stream_ask is not None else self._optional_price(contract.best_ask)
+
+        needs_refresh = (best_bid is None or best_ask is None) and self._client is not None
+        if needs_refresh:
+            try:
+                ticker_response = await self._client.get_ticker(contract.symbol)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to refresh best bid/ask for %s",
+                    contract.symbol,
+                    extra={"strategy_id": self._state.strategy_id if self._state else None},
+                )
+            else:
+                result = ticker_response.get("result") or ticker_response.get("data") or {}
+                refreshed_bid = self._optional_price(result.get("best_bid_price") or result.get("best_bid"))
+                refreshed_ask = self._optional_price(result.get("best_ask_price") or result.get("best_ask"))
+                if best_bid is None and refreshed_bid is not None:
+                    best_bid = refreshed_bid
+                if best_ask is None and refreshed_ask is not None:
+                    best_ask = refreshed_ask
+
+        return best_bid, best_ask
 
     async def _wait_for_fill_or_timeout(
         self,
@@ -1186,6 +1193,15 @@ class TradingEngine:
                 contract.mid_price,
             )
             limit_price = self._normalize_price(price_candidate, tick_size)
+            if limit_price <= 0:
+                fallback_price = contract.mid_price if contract.mid_price > 0 else (tick_size if tick_size > 0 else 0.1)
+                limit_price = self._normalize_price(fallback_price, tick_size)
+                logger.warning(
+                    "Normalized limit price was non-positive; using fallback %.6f for %s",
+                    limit_price,
+                    contract.symbol,
+                    extra={"strategy_id": self._state.strategy_id if self._state else None},
+                )
             client_order_id = f"{self._state.strategy_id}-{self._option_kind(contract.contract_type)}-{uuid.uuid4().hex[:6]}-limit{attempt}"
             payload: Dict[str, Any] = {
                 "product_id": contract.product_id,
@@ -1814,7 +1830,13 @@ class TradingEngine:
                 if quote.get("best_ask_size") is not None:
                     default_ask_size = float(best_ask_size) if isinstance(best_ask_size, (int, float)) else 0.0
                     best_ask_size = self._to_float(quote["best_ask_size"], default_ask_size)
-                ticker_timestamp = quote.get("timestamp") or quote.get("time") or quote.get("server_time") or ticker_timestamp
+                quote_timestamp = quote.get("timestamp") or quote.get("time") or quote.get("server_time")
+                if quote_timestamp is not None:
+                    normalized_ts = OptionPriceStream._normalize_timestamp(quote_timestamp)
+                    if normalized_ts is not None:
+                        ticker_timestamp = normalized_ts
+                if ticker_timestamp is None:
+                    ticker_timestamp = quote_timestamp or ticker_timestamp
                 if mark_price is not None:
                     state.mark_prices[position.symbol] = mark_price
 
@@ -1835,9 +1857,16 @@ class TradingEngine:
                     if result.get("best_ask_size") is not None:
                         default_ask_size = float(best_ask_size) if isinstance(best_ask_size, (int, float)) else 0.0
                         best_ask_size = self._to_float(result.get("best_ask_size"), default_ask_size)
-                    ticker_timestamp = ticker_timestamp or result.get("timestamp")
+                    if ticker_timestamp is None and result.get("timestamp") is not None:
+                        normalized_ts = OptionPriceStream._normalize_timestamp(result.get("timestamp"))
+                        ticker_timestamp = normalized_ts if normalized_ts is not None else result.get("timestamp")
                     if mark_price is not None:
                         state.mark_prices[position.symbol] = mark_price
+
+            if ticker_timestamp is not None:
+                normalized_ts = OptionPriceStream._normalize_timestamp(ticker_timestamp)
+                if normalized_ts is not None:
+                    ticker_timestamp = normalized_ts
 
             if mark_price is None:
                 mark_price = position.exit_price or position.entry_price
@@ -2088,25 +2117,22 @@ class TradingEngine:
         tick_size: float,
         fallback: float,
     ) -> float:
-        price = fallback
         tick = tick_size if tick_size and tick_size > 0 else 0.1
-        if side.lower() == "buy":
-            if best_bid is not None:
-                price = best_bid + tick
-                if best_ask is not None:
-                    price = min(price, best_ask)
-            elif best_ask is not None:
-                price = best_ask
-        else:
-            if best_ask is not None:
-                price = max(best_ask - tick, tick)
-                if best_bid is not None:
-                    price = max(price, best_bid)
-            elif best_bid is not None:
-                price = best_bid
+        safe_fallback = fallback if fallback and fallback > 0 else tick
 
-        if price <= 0:
-            price = fallback if fallback > 0 else tick
+        side_normalized = side.lower()
+        price: float | None
+        if side_normalized == "buy":
+            price = best_ask if best_ask is not None and best_ask > 0 else None
+            if price is None and best_bid is not None and best_bid > 0:
+                price = best_bid + tick
+        else:
+            price = best_bid if best_bid is not None and best_bid > 0 else None
+            if price is None and best_ask is not None and best_ask > 0:
+                price = max(best_ask - tick, tick)
+
+        if price is None or price <= 0:
+            price = safe_fallback
         return price
 
     def _config_contract_size(self) -> float:
