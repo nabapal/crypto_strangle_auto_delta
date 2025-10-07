@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    image: delta-strangle-backend:prod
+    env_file:
+      - .env.prod
+    environment:
+      BACKEND_LOG_PATH: /app/logs/backend.log
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - app-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+        VITE_ENABLE_API_DEBUG: ${VITE_ENABLE_API_DEBUG:-false}
+    image: delta-strangle-frontend:prod
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - app-net
+    restart: unless-stopped
+
+networks:
+  app-net:
+    driver: bridge

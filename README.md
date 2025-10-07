@@ -62,6 +62,52 @@ pnpm dev
 
 Create `frontend/.env` by copying the `# Frontend` section from the root `.env.example`. Adjust `VITE_API_BASE_URL` so it points at the FastAPI host (include the `/api` suffix). When serving the UI from a different origin, update this value to target the production backend.
 
+## Production Deployment
+
+The repository ships with a self-contained production stack built on Docker Compose. It packages the FastAPI backend and the nginx-served React frontend while keeping logging, data, and automation on the host.
+
+### 1. Prepare environment variables
+
+Copy the template to `.env.prod` and fill in secrets:
+
+```bash
+cp .env.prod.example .env.prod
+```
+
+Key variables:
+
+- `DATABASE_URL=sqlite+aiosqlite:////app/data/delta_trader.db`
+- `BACKEND_LOG_INGEST_ENABLED=true` and `BACKEND_LOG_PATH=/app/logs/backend.log`
+- `BACKEND_LOG_POLL_INTERVAL`, `BACKEND_LOG_BATCH_SIZE`, `BACKEND_LOG_RETENTION_DAYS` (defaults provided)
+- `DELTA_API_KEY` / `DELTA_API_SECRET`
+- `ALLOWED_ORIGINS` and `VITE_API_BASE_URL=https://your-domain/api`
+- Optional `LOG_INGEST_API_KEY` to protect the `/api/logs/batch` endpoint
+
+### 2. Review the compose stack
+
+- `docker/backend.Dockerfile`: multi-stage Python image that installs dependencies into a virtualenv and exposes FastAPI on port 8001.
+- `docker/frontend.Dockerfile`: builds the Vite app with pnpm and serves it via nginx using `docker/nginx.conf` to proxy `/api` to the backend.
+- `docker-compose.prod.yml`: runs both services on the `app-net` bridge network, mounts `./data` → `/app/data` and `./logs` → `/app/logs`, and publishes port 80 (fronted by nginx).
+
+### 3. Deploy with one command
+
+```bash
+./scripts/deploy_prod.sh
+```
+
+The script stashes local changes, syncs to `origin/master`, rebuilds images, restarts the compose stack, and prints reminders about verifying the log viewer. Run it whenever you need to refresh the production host.
+
+### 4. Post-deploy checks
+
+- Visit the dashboard (`https://your-domain/`) and open the **Log Viewer** tab to confirm backend ingestion is working.
+- Tail container logs if needed:
+
+  ```bash
+  docker compose -f docker-compose.prod.yml logs -f backend
+  ```
+
+- Back up the `data/` directory regularly—it contains both trading metadata and persisted backend logs.
+
 ## API Debug Logging
 
 Flip on verbose HTTP tracing when you need to inspect calls between the dashboard and backend:
@@ -71,6 +117,14 @@ Flip on verbose HTTP tracing when you need to inspect calls between the dashboar
 - `DELTA_DEBUG_VERBOSE=true` traces all outbound Delta Exchange requests, logging masked payloads and latencies.
 
 Remember to turn the flags back to `false` once troubleshooting is complete.
+
+## Observability & Retention
+
+- Backend logs are emitted in structured JSON, written both to stdout and `logs/backend.log`.
+- `BackendLogTailService` streams new lines into the `backend_logs` table, making them queryable via the frontend Log Viewer and API (`/api/logs/backend`).
+- `BackendLogRetentionService` purges entries older than `BACKEND_LOG_RETENTION_DAYS` (default 7 days).
+- Use the Log Viewer tab to filter by level, correlation ID, event name, or free-text search; expand rows to inspect full payloads.
+- Host-level rotation (`logrotate`, etc.) can be layered onto `logs/backend.log` without breaking ingestion—the tailer handles truncation and rotations automatically.
 
 ## Webhook / L1 Stream Tester
 
