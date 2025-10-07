@@ -23,6 +23,7 @@ class StrategySessionSummary(BaseModel):
     status: str
     activated_at: Optional[datetime]
     deactivated_at: Optional[datetime]
+    duration_seconds: float | None = None
     pnl_summary: dict | None = None
     session_metadata: dict | None = None
     exit_reason: Optional[str] = None

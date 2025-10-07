@@ -26,6 +26,7 @@ export interface TradingSessionSummary {
   status: string;
   activated_at?: string | null;
   deactivated_at?: string | null;
+  duration_seconds?: number | null;
   pnl_summary?: Record<string, unknown> | null;
   session_metadata?: Record<string, unknown> | null;
   exit_reason?: string | null;

@@ -58,3 +58,4 @@ async def test_get_session_detail_returns_related_entities(db_session):
     assert payload["orders"][0]["order_id"] == "order-1"
     assert len(payload["positions"]) == 1
     assert payload["positions"][0]["symbol"] == "BTC-TEST"
+    assert payload["duration_seconds"] == 0

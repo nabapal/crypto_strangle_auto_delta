@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone
 from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +52,24 @@ def _extract_leg_summary(session_obj: StrategySession) -> list[dict] | None:
     return legs if legs else None
 
 
+def _ensure_aware(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _compute_session_duration_seconds(session_obj: StrategySession) -> float | None:
+    if not session_obj.activated_at:
+        return None
+
+    start = _ensure_aware(session_obj.activated_at)
+    end_raw = session_obj.deactivated_at or datetime.now(timezone.utc)
+    end = _ensure_aware(end_raw)
+
+    duration_seconds = (end - start).total_seconds()
+    return max(duration_seconds, 0.0)
+
+
 @router.post("/control", response_model=TradingControlResponse)
 async def control_trading(payload: TradingControlRequest, session: AsyncSession = Depends(get_db_session)):
     service = TradingService(session)
@@ -84,6 +104,7 @@ async def list_sessions(session: AsyncSession = Depends(get_db_session)):
             status=s.status,
             activated_at=s.activated_at,
             deactivated_at=s.deactivated_at,
+            duration_seconds=_compute_session_duration_seconds(s),
             pnl_summary=s.pnl_summary,
             session_metadata=s.session_metadata,
             exit_reason=_extract_exit_reason(s),
@@ -126,6 +147,7 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
         status=result.status,
         activated_at=result.activated_at,
         deactivated_at=result.deactivated_at,
+    duration_seconds=_compute_session_duration_seconds(result),
         pnl_summary=result.pnl_summary,
         session_metadata=result.session_metadata,
         exit_reason=_extract_exit_reason(result),

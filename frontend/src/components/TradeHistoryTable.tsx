@@ -62,6 +62,17 @@ const formatDateTime = (value: unknown) => {
   return date.toLocaleString();
 };
 
+const formatDuration = (value: unknown) => {
+  const numeric = toNumber(value);
+  if (numeric === null) return "--";
+  const totalSeconds = Math.max(0, Math.round(numeric));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [hours, minutes, seconds].map((part) => String(part).padStart(2, "0"));
+  return parts.join(":");
+};
+
 const toRecord = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 
@@ -201,6 +212,11 @@ export default function TradeHistoryTable() {
       title: "Deactivated",
       dataIndex: "deactivated_at",
       render: (value: unknown) => formatDateTime(value)
+    },
+    {
+      title: "Duration",
+      dataIndex: "duration_seconds",
+      render: (value: unknown) => formatDuration(value)
     },
     {
       title: "Net PnL",
@@ -407,6 +423,7 @@ export default function TradeHistoryTable() {
               <Descriptions.Item label="Exit Reason">{exitReasonDetail ?? "--"}</Descriptions.Item>
               <Descriptions.Item label="Activated">{formatDateTime(detail.activated_at)}</Descriptions.Item>
               <Descriptions.Item label="Deactivated">{formatDateTime(detail.deactivated_at)}</Descriptions.Item>
+              <Descriptions.Item label="Duration">{formatDuration(detail.duration_seconds)}</Descriptions.Item>
             </Descriptions>
             <Descriptions column={2} size="small">
               <Descriptions.Item label="Net PnL">{renderCurrency(netValue)}</Descriptions.Item>
