@@ -28,3 +28,7 @@ By default the service reads `DATABASE_URL` from the project `.env`. The sample 
 cd backend
 pytest
 ```
+
+# Backend Documentation
+
+All backend setup and operating instructions now live in the repository root [`README.md`](../README.md).

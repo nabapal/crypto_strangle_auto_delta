@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,37 @@ from app.services.delta_websocket_client import OptionPriceStream
 from app.services.trading_engine import OptionContract, StrategyRuntimeState, TradingEngine
 from app.services.trading_service import TradingService
 from app.services.analytics_service import AnalyticsService
+
+
+def _engine_with_pnl(
+    pnl_value: float,
+    *,
+    notional: float = 1_000.0,
+    max_loss_pct: float = 0.0,
+    max_profit_pct: float = 0.0,
+    trailing_enabled: bool = False,
+    trailing_level: float | None = None,
+) -> TradingEngine:
+    config = TradingConfiguration(
+        name="Exit Rule Config",
+        max_loss_pct=max_loss_pct,
+        max_profit_pct=max_profit_pct,
+        trailing_sl_enabled=trailing_enabled,
+    )
+    session = StrategySession(
+        strategy_id="exit-rule-strategy",
+        status="running",
+        activated_at=datetime.now(timezone.utc),
+        config_snapshot={},
+    )
+    engine = TradingEngine()
+    state = StrategyRuntimeState(strategy_id="exit-rule-strategy", config=config, session=session)
+    state.pnl_history.append({"pnl": pnl_value})
+    state.portfolio_notional = notional
+    if trailing_level is not None:
+        state.trailing_level = trailing_level
+    engine._state = state
+    return engine
 
 
 @pytest.mark.asyncio
@@ -178,6 +210,75 @@ async def test_refresh_position_analytics_uses_ticker_quotes():
     assert positions_payload[0]["best_ask_size"] == pytest.approx(110)
     assert positions_payload[0]["ticker_timestamp"] == "2023-11-28T07:50:03.668868+00:00"
     assert totals["notional"] == pytest.approx(1250.0)
+
+
+def test_check_exit_conditions_triggers_max_loss():
+    engine = _engine_with_pnl(-60.0, notional=1_000.0, max_loss_pct=5.0)
+
+    result = engine._check_exit_conditions()
+
+    assert result == "max_loss"
+
+
+def test_check_exit_conditions_triggers_max_profit():
+    engine = _engine_with_pnl(120.0, notional=1_000.0, max_loss_pct=5.0, max_profit_pct=10.0)
+
+    result = engine._check_exit_conditions()
+
+    assert result == "max_profit"
+
+
+def test_check_exit_conditions_triggers_trailing_stop():
+    engine = _engine_with_pnl(
+        15.0,
+        notional=1_000.0,
+        max_loss_pct=5.0,
+        max_profit_pct=10.0,
+        trailing_enabled=True,
+        trailing_level=2.0,
+    )
+
+    result = engine._check_exit_conditions()
+
+    assert result == "trailing_sl"
+
+
+def test_compute_exit_time_returns_future_slot():
+    engine = TradingEngine()
+    ist = ZoneInfo("Asia/Kolkata")
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(ist)
+    target_local = (now_ist + timedelta(hours=2)).replace(second=0, microsecond=0)
+    config = TradingConfiguration(name="Future Exit Config", exit_time_ist=target_local.strftime("%H:%M"))
+
+    exit_dt = engine._compute_exit_time(config)
+
+    assert exit_dt is not None
+    expected_local = datetime.combine(now_ist.date(), target_local.time(), tzinfo=ist)
+    if expected_local <= now_ist:
+        expected_local += timedelta(days=1)
+    assert exit_dt.astimezone(ist) == expected_local
+    assert exit_dt > now_utc - timedelta(minutes=1)
+
+
+def test_compute_exit_time_rolls_over_when_time_already_passed():
+    engine = TradingEngine()
+    ist = ZoneInfo("Asia/Kolkata")
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(ist)
+    raw_local = (now_ist - timedelta(hours=1)).replace(second=0, microsecond=0)
+    if raw_local.date() != now_ist.date():
+        raw_local = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    config = TradingConfiguration(name="Past Exit Config", exit_time_ist=raw_local.strftime("%H:%M"))
+
+    exit_dt = engine._compute_exit_time(config)
+
+    assert exit_dt is not None
+    expected_local = datetime.combine(now_ist.date(), raw_local.time(), tzinfo=ist)
+    if expected_local <= now_ist:
+        expected_local += timedelta(days=1)
+    assert exit_dt.astimezone(ist) == expected_local
+    assert exit_dt > now_utc - timedelta(minutes=1)
 
 
 def test_select_contracts_prefers_highest_delta():

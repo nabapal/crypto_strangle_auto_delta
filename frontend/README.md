@@ -23,3 +23,7 @@ By default the `.env.example` file points to `http://localhost:8001/api`. Update
 ### Debugging API Traffic
 
 When you need to inspect the REST traffic end-to-end, set `VITE_ENABLE_API_DEBUG=true` in `.env`. Axios interceptors will dump request and response metadata (plus JSON payloads) to the browser console using collapsed groups so you can expand only what you need.
+
+# Frontend Documentation
+
+Setup and usage guidance has been consolidated into the repository root [`README.md`](../README.md).

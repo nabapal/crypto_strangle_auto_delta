@@ -1,16 +1,31 @@
 # Delta Strangle Enterprise Platform
 
-Modernized control plane for the BTC/ETH short strangle automation. The stack now consists of:
+Modernized control plane for automated BTC/ETH short strangle trading. The platform spans a FastAPI backend, a React + Vite frontend, and CLI tooling for operational workflows.
 
-- **Backend** – FastAPI + async SQLAlchemy microservice exposing configuration, trading control, and analytics APIs.
-- **Frontend** – React + Ant Design admin UI for configuration, control, and analytics.
-- **CLI** – `production_delta_trader.py` for quick bootstrapping and health checks.
+## Platform Highlights
+
+### Backend (FastAPI)
+
+- Configuration CRUD with activation workflows and persistent strategy session metadata.
+- Lifecycle commands (start/stop/restart/panic) coordinated by the shared trading engine.
+- Analytics APIs producing KPI tiles, chart feeds, and trailing stop telemetry.
+- Async SQLAlchemy data access with a SQLite default (swap the DSN for Postgres/MySQL in production).
+- Feature-flagged logging controls for structured tracing of Delta Exchange interactions.
+
+### Frontend (React + Vite)
+
+- Configuration forms covering delta ranges, schedules, trailing SL, and risk limits.
+- Live control panel to monitor session status and trigger lifecycle commands.
+- History views summarizing PnL, legs, orders, and trailing performance.
+- Advanced analytics dashboards powered by Ant Design components and React Query.
+- Optional client-side logging hooks for deep troubleshooting.
 
 ## Directory Layout
 
 ```
 backend/   # FastAPI application, database models, trading engine
 frontend/  # React admin dashboard built with Vite
+scripts/   # CLI helpers and diagnostics
 ```
 
 ## Quickstart
@@ -21,7 +36,7 @@ frontend/  # React admin dashboard built with Vite
 ./scripts/start_local.sh
 ```
 
-The script clears previous SQLite artifacts, points `DATABASE_URL` at the shared `data/` directory (handy for future container volume mounts), activates the Python virtualenv, and runs both the FastAPI backend (`http://localhost:8001`) and the React dev server (`http://localhost:5173`). Hit <kbd>Ctrl+C</kbd> to stop both services.
+The helper script clears stale SQLite files, activates the backend virtualenv, and starts both services (`http://localhost:8001` for FastAPI and `http://localhost:5173` for the dashboard). Press <kbd>Ctrl+C</kbd> to stop everything.
 
 ### Backend
 
@@ -33,53 +48,50 @@ pip install -e .[dev]
 uvicorn app.main:app --port 8001 --reload
 ```
 
+Environment variables are read from `backend/.env`. Use the consolidated `.env.example` in the repository root, copy the `# Backend` section into `backend/.env`, and fill in any secrets before launching.
+
 ### Frontend
 
 ```bash
 cd frontend
-cp .env.example .env  # adjust VITE_API_BASE_URL for your backend host
 pnpm install
 pnpm dev
 ```
 
-Set `VITE_API_BASE_URL` to the FastAPI base URL that includes the `/api` prefix (the sample `.env.example` points to `http://localhost:8001/api`). In production deployments where the UI is served from a different domain, update the value accordingly so all React Query calls target the live backend.
+Create `frontend/.env` by copying the `# Frontend` section from the root `.env.example`. Adjust `VITE_API_BASE_URL` so it points at the FastAPI host (include the `/api` suffix). When serving the UI from a different origin, update this value to target the production backend.
 
-The SQLite file now lives under `data/delta_trader.db`; this folder can be bind-mounted when containerizing the stack so the host retains trading history.
+## API Debug Logging
 
-### API Debug Logging
+Flip on verbose HTTP tracing when you need to inspect calls between the dashboard and backend:
 
-Flip on verbose HTTP tracing when you need to inspect every call between the dashboard and backend:
+- `DEBUG_HTTP_LOGGING=true` enables request/response logging within FastAPI (payloads truncated to 4 KB).
+- `VITE_ENABLE_API_DEBUG=true` mirrors the diagnostics in the browser console via Axios interceptors.
+- `DELTA_DEBUG_VERBOSE=true` traces all outbound Delta Exchange requests, logging masked payloads and latencies.
 
-- Set `DEBUG_HTTP_LOGGING=true` in `.env` (or export it) to enable request/response logging within FastAPI. Logs will appear in the backend terminal with payloads truncated to 4 KB.
-- Set `VITE_ENABLE_API_DEBUG=true` in `frontend/.env` to mirror the same diagnostics in the browser console via Axios interceptors.
-- Set `DELTA_DEBUG_VERBOSE=true` to trace every outbound Delta Exchange API call (method, path, status, latency). When enabled the backend also logs truncated request/response payloads with sensitive fields masked.
+Remember to turn the flags back to `false` once troubleshooting is complete.
 
-Turn the flags back to `false` once you're done to avoid noisy logs in production.
+## Webhook / L1 Stream Tester
 
-### Webhook / L1 Stream Tester
-
-Use `scripts/test_webhook_l1.py` to watch the live best bid/ask feed coming from Delta's websocket. The helper bootstraps the same `OptionPriceStream` used by the trading engine, making it easy to validate webhook data outside the service loop.
+Use `scripts/test_webhook_l1.py` to monitor live best bid/ask data from Delta's websocket. The helper bootstraps the same `OptionPriceStream` used by the trading engine, making it easy to validate feeds outside the service loop.
 
 ```bash
 python scripts/test_webhook_l1.py \
-	--symbols C-BTC-95000-310125 P-BTC-95000-310125 \
-	--duration 30 \
-	--interval 0.5
+  --symbols C-BTC-95000-310125 P-BTC-95000-310125 \
+  --duration 30 \
+  --interval 0.5
 ```
 
-- `--symbols` (required): one or more option symbols to subscribe to.
-- `--duration`: seconds to stream before exiting (`<=0` runs until <kbd>Ctrl+C</kbd>).
+- `--symbols` (required): option symbols to subscribe to.
+- `--duration`: seconds to stream before exiting (`<=0` runs until interrupted).
 - `--interval`: print frequency in seconds (default `1.0`).
-- `--url`: override the websocket endpoint if you need testnet or a proxy.
-
-Logged rows include current best bid/ask, sizes, and the raw L1 timestamp/receipt time to help diagnose stale data.
+- `--url`: override the websocket endpoint (useful for testnet or proxies).
 
 ## Documentation
 
 - [Live Control Telemetry & UX Enhancement Plan](docs/live-control-enhancement-plan.md)
 - [Backend ↔ Delta Exchange Debugging Plan](docs/backend-delta-debug-plan.md)
 
-### CLI Helpers
+## CLI Helpers
 
 ```bash
 python production_delta_trader.py runserver
