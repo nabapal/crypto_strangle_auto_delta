@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -687,3 +687,36 @@ async def test_record_session_snapshot_persists_metrics(db_session):
     assert snapshot.kpis[0]["label"] == "Realized PnL"
     assert snapshot.kpis[0]["value"] == pytest.approx(10.0)
     assert snapshot.chart_data["pnl"][0]["pnl"] == pytest.approx(10.0)
+    expected_ts = now.replace(tzinfo=timezone.utc).timestamp()
+    assert snapshot.chart_data["pnl"][0]["timestamp"] == pytest.approx(expected_ts)
+
+
+@pytest.mark.asyncio
+async def test_latest_snapshot_normalizes_chart_data(db_session):
+    captured_at = datetime.now(timezone.utc)
+    snapshot = TradeAnalyticsSnapshot(
+        generated_at=captured_at,
+        kpis=[{"label": "Test", "value": 1.0, "unit": "USD"}],
+        chart_data={
+            "pnl": [
+                {"timestamp": captured_at.isoformat(), "pnl": 1.0},
+                {"timestamp": None, "pnl": 2.0},
+            ],
+            "realized": [],
+            "unrealized": [],
+        },
+    )
+    db_session.add(snapshot)
+    await db_session.flush()
+
+    service = AnalyticsService(db_session)
+    response = await service.latest_snapshot()
+
+    assert len(response.chart_data["pnl"]) == 1
+    normalized_point = response.chart_data["pnl"][0]
+    assert normalized_point["pnl"] == pytest.approx(1.0)
+    assert normalized_point["timestamp"] == pytest.approx(captured_at.timestamp())
+
+    await db_session.refresh(snapshot)
+    stored_point = snapshot.chart_data["pnl"][0]
+    assert stored_point["timestamp"] == pytest.approx(captured_at.timestamp())
