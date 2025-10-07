@@ -6,10 +6,11 @@ from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Tuple
 
 try:
-    from pythonjsonlogger.json import JsonFormatter
+    from pythonjsonlogger.json import JsonFormatter  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - compatibility fallback
     from pythonjsonlogger import jsonlogger as _jsonlogger
 
@@ -100,7 +101,7 @@ def _resolve_log_level(level: str | int) -> int:
     return logging.INFO
 
 
-def configure_logging(level: str | int = logging.INFO) -> None:
+def configure_logging(level: str | int = logging.INFO, *, log_path: str | Path | None = None) -> None:
     """Configure application-wide structured logging."""
 
     global _LOGGING_CONFIGURED
@@ -110,12 +111,30 @@ def configure_logging(level: str | int = logging.INFO) -> None:
     root_logger.setLevel(resolved_level)
 
     if not _LOGGING_CONFIGURED:
-        handler = logging.StreamHandler()
-        handler.setFormatter(StructuredJsonFormatter())
-        handler.addFilter(_ContextEnricher())
-
         root_logger.handlers.clear()
-        root_logger.addHandler(handler)
+
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(StructuredJsonFormatter())
+        stream_handler.addFilter(_ContextEnricher())
+        root_logger.addHandler(stream_handler)
+
+        if log_path:
+            try:
+                path = Path(log_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.FileHandler(path, encoding="utf-8")
+                file_handler.setFormatter(StructuredJsonFormatter())
+                file_handler.addFilter(_ContextEnricher())
+                root_logger.addHandler(file_handler)
+            except OSError as exc:  # pragma: no cover - filesystem guard
+                root_logger.warning(
+                    "Failed to initialize file logging",
+                    extra={
+                        "event": "file_logging_setup_failed",
+                        "error": str(exc),
+                        "log_path": str(log_path),
+                    },
+                )
 
         # Ensure Uvicorn and FastAPI logs flow through the root logger
         for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):

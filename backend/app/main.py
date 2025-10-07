@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, log_path=settings.backend_log_path)
 
     delta_logger = logging.getLogger("delta.client")
     delta_logger.setLevel(logging.DEBUG if settings.delta_debug_verbose else logging.INFO)
