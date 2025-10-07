@@ -419,13 +419,9 @@ export default function TradingControlPanel() {
       ? (notional * maxProfitPct) / 100
       : null;
   const maxLossAmount =
-    typeof notional === "number" && typeof maxLossPct === "number"
-      ? (notional * maxLossPct) / 100
-      : null;
+    typeof notional === "number" && typeof maxLossPct === "number" ? (notional * maxLossPct) / 100 : null;
   const effectiveLossAmount =
-    typeof notional === "number" && typeof effectiveLossPct === "number"
-      ? (notional * effectiveLossPct) / 100
-      : null;
+    typeof notional === "number" && typeof effectiveLossPct === "number" ? (notional * effectiveLossPct) / 100 : null;
   const maxProfitAmountDisplay =
     typeof maxProfitAmount === "number" && Number.isFinite(maxProfitAmount)
       ? `+$${formatCurrency(Math.abs(maxProfitAmount))}`
@@ -434,10 +430,17 @@ export default function TradingControlPanel() {
     typeof maxLossAmount === "number" && Number.isFinite(maxLossAmount)
       ? `-$${formatCurrency(Math.abs(maxLossAmount))}`
       : null;
-  const effectiveLossAmountDisplay =
-    typeof effectiveLossAmount === "number" && Number.isFinite(effectiveLossAmount)
-      ? `-$${formatCurrency(Math.abs(effectiveLossAmount))}`
-      : null;
+  const effectiveLossRepresentsFloor =
+    (limits?.trailing_enabled ?? trailing?.enabled ?? false) &&
+    typeof limits?.trailing_level_pct === "number" &&
+    limits.trailing_level_pct > 0;
+  const effectiveLossAmountDisplay = (() => {
+    if (!(typeof effectiveLossAmount === "number" && Number.isFinite(effectiveLossAmount))) {
+      return null;
+    }
+    const prefix = effectiveLossRepresentsFloor ? "+" : "-";
+    return `${prefix}$${formatCurrency(Math.abs(effectiveLossAmount))}`;
+  })();
 
   const trailingLevelPct = limits?.trailing_level_pct ?? trailing?.level ?? 0;
   const trailingEnabled = limits?.trailing_enabled ?? trailing?.enabled ?? false;

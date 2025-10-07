@@ -23,13 +23,14 @@ This guide describes how to deploy the Delta Strangle Control Plane to a product
    - `LOG_INGEST_API_KEY` (optional protection for `/api/logs/batch`)
    - `DELTA_API_KEY` / `DELTA_API_SECRET`
    - `ALLOWED_ORIGINS` with the production frontend URL
+   - `APP_UID` / `APP_GID` matching the host user that owns the repository (prevents bind-mount permission errors)
    - `VITE_API_BASE_URL` set to `https://<your-domain>/api`
 
 3. **Prepare host storage** (if not using the deploy script):
    ```bash
    mkdir -p data logs
    ```
-   Ensure the Docker daemon user has read/write access to these directories.
+   Ensure the Docker daemon user has read/write access to these directories. The deploy script will attempt to `chown` them to `APP_UID:APP_GID` after sourcing `.env.prod`.
 
 ## Deploying with the automation script
 Run the deployment script from the repository root:

@@ -24,6 +24,12 @@ set -a
 source "${ENV_FILE}"
 set +a
 
+app_uid="${APP_UID:-1000}"
+app_gid="${APP_GID:-1000}"
+if ! chown -R "${app_uid}:${app_gid}" "${REPO_ROOT}/data" "${REPO_ROOT}/logs" 2>/dev/null; then
+  echo "[deploy] Warning: unable to chown data/logs to ${app_uid}:${app_gid}. Ensure these directories are writable by the container user." >&2
+fi
+
 pushd "${REPO_ROOT}" >/dev/null
 
 current_branch="$(git rev-parse --abbrev-ref HEAD)"

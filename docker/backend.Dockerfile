@@ -26,13 +26,15 @@ RUN python -m venv /opt/venv \
 
 
 FROM python:3.12-slim AS runtime
+ARG APP_UID=1000
+ARG APP_GID=1000
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app/backend"
 
-RUN addgroup --system app \
-    && adduser --system --ingroup app app
+RUN groupadd --system --gid "${APP_GID}" app \
+    && useradd --system --no-create-home --uid "${APP_UID}" --gid app app
 
 WORKDIR /app
 
