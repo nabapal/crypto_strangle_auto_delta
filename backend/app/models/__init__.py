@@ -1,5 +1,5 @@
 from .config import AppFeatureFlag, TradingConfiguration
-from .logging import FrontendLogEntry
+from .logging import BackendLogEntry, FrontendLogEntry
 from .trading import OrderLedger, PositionLedger, StrategySession, TradeAnalyticsSnapshot
 
 __all__ = [
@@ -10,4 +10,5 @@ __all__ = [
     "StrategySession",
     "TradeAnalyticsSnapshot",
     "FrontendLogEntry",
+    "BackendLogEntry",
 ]

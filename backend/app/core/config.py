@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     tick_log_sample_rate: int = 50
     log_ingest_api_key: str | None = None
     log_ingest_max_batch: int = 100
+    backend_log_ingest_enabled: bool = True
+    backend_log_path: str = "logs/backend.log"
+    backend_log_poll_interval: float = 1.0
+    backend_log_batch_size: int = 128
+    backend_log_retention_days: int = 7
 
     # Trading runtime
     default_underlying: str = "BTC"

@@ -14,6 +14,8 @@ from app.models import FrontendLogEntry
 async def test_ingest_frontend_logs_persists_entries(monkeypatch):
     monkeypatch.setenv("LOG_INGEST_API_KEY", "test-token")
     monkeypatch.setenv("LOG_INGEST_MAX_BATCH", "10")
+    monkeypatch.setenv("BACKEND_LOG_INGEST_ENABLED", "false")
+    monkeypatch.setenv("BACKEND_LOG_RETENTION_DAYS", "0")
     get_settings.cache_clear()  # type: ignore[attr-defined]
 
     app = create_app()
@@ -61,6 +63,8 @@ async def test_ingest_frontend_logs_persists_entries(monkeypatch):
 @pytest.mark.asyncio
 async def test_ingest_frontend_logs_rejects_invalid_key(monkeypatch):
     monkeypatch.setenv("LOG_INGEST_API_KEY", "expected-key")
+    monkeypatch.setenv("BACKEND_LOG_INGEST_ENABLED", "false")
+    monkeypatch.setenv("BACKEND_LOG_RETENTION_DAYS", "0")
     get_settings.cache_clear()  # type: ignore[attr-defined]
 
     app = create_app()
@@ -91,6 +95,8 @@ async def test_ingest_frontend_logs_rejects_invalid_key(monkeypatch):
 async def test_ingest_frontend_logs_enforces_batch_limit(monkeypatch):
     monkeypatch.setenv("LOG_INGEST_API_KEY", "test-token")
     monkeypatch.setenv("LOG_INGEST_MAX_BATCH", "1")
+    monkeypatch.setenv("BACKEND_LOG_INGEST_ENABLED", "false")
+    monkeypatch.setenv("BACKEND_LOG_RETENTION_DAYS", "0")
     get_settings.cache_clear()  # type: ignore[attr-defined]
 
     app = create_app()

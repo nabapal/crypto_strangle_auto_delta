@@ -17,6 +17,15 @@ LOG_ENDPOINT="${LOG_ENDPOINT:-${LOG_ENDPOINT_DEFAULT}}"
 DEFAULT_ALLOWED_ORIGIN="http://localhost:${FRONTEND_PORT}"
 DEFAULT_ALLOWED_ORIGINS_JSON="[\"${DEFAULT_ALLOWED_ORIGIN}\"]"
 
+printf '[info] Switching to project root %s\n' "${ROOT_DIR}"
+cd "${ROOT_DIR}"
+
+if [[ -z "${PYTHONPATH:-}" ]]; then
+  export PYTHONPATH="${ROOT_DIR}"
+else
+  export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH}"
+fi
+
 printf '\n[start] Preparing workspace at %s\n' "${ROOT_DIR}"
 rm -f "${ROOT_DIR}/delta_trader.db" "${ROOT_DIR}/backend/delta_trader.db"
 mkdir -p "${DATA_DIR}"

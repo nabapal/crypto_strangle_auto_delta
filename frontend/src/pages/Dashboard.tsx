@@ -6,6 +6,7 @@ const ConfigPanel = lazy(() => import("../components/ConfigPanel"));
 const TradingControlPanel = lazy(() => import("../components/TradingControlPanel"));
 const TradeHistoryTable = lazy(() => import("../components/TradeHistoryTable"));
 const AnalyticsDashboard = lazy(() => import("../components/AnalyticsDashboard"));
+const LogViewer = lazy(() => import("../components/LogViewer"));
 import logger from "../utils/logger";
 
 const { Header, Content } = Layout;
@@ -53,6 +54,15 @@ export default function Dashboard() {
         children: (
           <Suspense fallback={<Spin tip="Loading analytics" />}>
             <AnalyticsDashboard />
+          </Suspense>
+        )
+      },
+      {
+        key: "logs",
+        label: "Log Viewer",
+        children: (
+          <Suspense fallback={<Spin tip="Loading logs" />}>
+            <LogViewer />
           </Suspense>
         )
       }

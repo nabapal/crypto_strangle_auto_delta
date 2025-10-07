@@ -43,3 +43,27 @@ class FrontendLogBatch(BaseModel):
         if not entries:
             raise ValueError("entries must contain at least one log record")
         return entries
+
+
+class BackendLogRecord(BaseModel):
+    id: int
+    logged_at: datetime
+    ingested_at: datetime
+    level: str
+    logger_name: str
+    event: str | None = None
+    message: str
+    correlation_id: str | None = None
+    request_id: str | None = None
+    payload: dict[str, Any] | None = None
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
+class BackendLogPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[BackendLogRecord]

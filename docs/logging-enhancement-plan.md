@@ -3,12 +3,12 @@
 ## Objectives
 - Emit structured JSON logs across backend services and the frontend client for consistent ingestion.
 - Capture every critical decision, market data input, order lifecycle event, and error with enough context to reproduce issues.
-- Correlate events across services via shared identifiers and stream logs to an Elastic Stack (Elasticsearch, Logstash, Kibana) deployment for analysis and alerting.
+- Correlate events across services via shared identifiers and surface them through an in-repo SQLite-backed log viewer for analysis and troubleshooting without external dependencies.
 
 ## Status Snapshot (October 7 2025)
 - ✅ **Phase 1 – Backend Foundations**: Structured logging, correlation IDs, task monitoring, and dependency instrumentation are live and covered by tests.
 - ✅ **Phase 2 – Frontend Telemetry**: Unified logger shipped, UI flows instrumented, `/api/logs` ingest endpoint online, and remote batching enabled with API-key protection.
-- ✅ **Phase 3 – Aggregation & Operations**: Dockerised ELK stack, Filebeat shipper, retention/alerting guidance, and an operational runbook are available in `infra/logging/`.
+- ✅ **Phase 3 – Aggregation & Operations**: Backend log tailing, SQLite persistence, retention cleanup, and the React log viewer deliver self-contained observability.
 
 ---
 
@@ -53,48 +53,38 @@
 
 ---
 
+docker compose up -d
 ## Phase 3 – Aggregation & Operations (Completed)
 
-### Centralised sink assets
-- `infra/logging/docker-compose.yml` spins up Elasticsearch 8.15, Kibana, and Logstash with single-node defaults.
-- `infra/logging/logstash/pipeline/logstash.conf` ingests Beats traffic on port 5044, normalises fields, and indexes documents into `delta-logs-*` indices.
-- `infra/logging/filebeat.yml` tails `logs/backend.log` and `logs/frontend.log` as newline-delimited JSON and forwards them to Logstash.
+### Backend ingestion & storage
+- `backend/app/services/log_tail_service.py` tails `logs/backend.log`, parses newline-delimited JSON, and persists entries into the new `backend_logs` table with de-duplication via content hashes.
+- `backend/app/services/log_retention_service.py` runs as a background task, pruning `backend_logs` rows older than `BACKEND_LOG_RETENTION_DAYS` (defaults to 7) on an hourly cadence.
+- `backend/app/api/logs.py` exposes `/api/logs/backend` with pagination, free-text search, and filters for level, event, logger, correlation ID, and time ranges.
+- Settings: `BACKEND_LOG_INGEST_ENABLED`, `BACKEND_LOG_PATH`, `BACKEND_LOG_POLL_INTERVAL`, `BACKEND_LOG_BATCH_SIZE`, and `BACKEND_LOG_RETENTION_DAYS` govern the service behaviour.
 
-To launch the stack locally:
-```bash
-cd infra/logging
-docker compose up -d
-# Start Filebeat in a separate shell
-filebeat -e -c filebeat.yml
-```
-
-### Retention & alerting
-- Default Kibana data views: `delta-logs-*` with runtime fields for `strategy_id`, `session_id`, and `event`.
-- Hot retention: 30 days in the primary index; configure ILM in Kibana → Stack Management → Index Lifecycle to roll to cold storage at 180 days.
-- Recommended Kibana alert rules:
-  - **Delta API Failure Surge**: threshold on `event:delta_request_failed` with 5+ hits in 1 minute.
-  - **Strategy Error Exits**: `event:strategy_exit` & `status:error` to warn operations.
-  - **Frontend Error Boundary**: `event:ui_error_boundary_triggered` to notify incident response.
-  - **Websocket Heartbeat Gap**: absence of `websocket_quote_heartbeat` for 3 minutes.
+### Frontend log viewer
+- `frontend/src/components/LogViewer.tsx` renders the backend log stream in Ant Design tables with column filters, search inputs, and an optional auto-refresh toggle.
+- Query integration uses React Query for cache consistency and exponential backoff; expanding a row reveals the full JSON payload stored alongside each entry.
+- The viewer ships as a dedicated "Log Viewer" tab within the dashboard, allowing operators to pivot from configuration screens directly into correlated log trails.
 
 ### Validation & rollout checklist
-1. Deploy backend and frontend with `LOG_LEVEL=INFO`, `LOG_INGEST_API_KEY`, and `VITE_LOG_API_KEY` configured.
-2. Run a simulated session; verify correlation IDs link API, engine, and UI events in Kibana Discover.
-3. Confirm Filebeat shipping via Logstash by checking Kibana dashboard panels for PnL timelines and websocket uptime.
-4. Enable the alert rules above and test notification channels.
+1. Launch the app with `./scripts/start_local.sh`; confirm backend startup logs begin streaming into the Log Viewer without manual intervention.
+2. Trigger a few control-plane actions (start/panic/stop). Verify correlation IDs line up across frontend telemetry (`frontend_logs`) and backend events (`backend_logs`).
+3. Toggle log levels and confirm ingestion continues; use the date range filter to isolate recent noise and ensure retention pruning clears out older rows after the configured window.
+4. For headless deployments, run `pytest backend/tests/test_backend_log_api.py::test_backend_logs_endpoint_filters_and_pagination` to validate API filtering and pagination behaviour.
 
 ---
 
 ## Operational Runbook
-1. **Trace a correlation ID**: Search `correlation_id:"<value>"` across `delta-logs-*` to follow a user journey from the browser through FastAPI and the trading engine.
+1. **Trace a correlation ID**: Use the Log Viewer search (`Correlation ID` field) to follow a user journey end-to-end; expand matching rows to see the full payload.
 2. **Toggle log levels**: Update the `LOG_LEVEL` environment variable on the backend deployment and recycle the process. For frontend verbosity, adjust `VITE_ENABLE_API_DEBUG` and rebuild.
-3. **Purge noisy telemetry**: Tune `VITE_LOG_DEDUP_WINDOW` / `VITE_LOG_DEDUP_THRESHOLD` or backend sampling intervals to reduce chatter before re-running Filebeat.
+3. **Purge noisy telemetry**: Tune `VITE_LOG_DEDUP_WINDOW` / `VITE_LOG_DEDUP_THRESHOLD` or backend sampling intervals to reduce chatter before exporting sessions for analysis.
 4. **Respond to persistent frontend errors**: Filter for `event:ui_error_boundary_triggered`, inspect `data.component_stack`, follow the matching correlation ID into backend logs, and create a Jira incident if reproducible.
-5. **Monitor ingestion health**: Kibana → Stack Monitoring for Elasticsearch/Logstash stats; Filebeat logs for shipper back-pressure; backend `/api/logs/batch` HTTP 4xx spikes require frontend key rotation.
+5. **Monitor ingestion health**: Keep an eye on the auto-refresh cycle in the Log Viewer and backend logs for `backend_log_tail` warnings. `/api/logs/backend` returning stale data typically signals file permissions or ingestion bottlenecks.
 
 ---
 
 ## Next Steps
-- Automate ILM and alert provisioning via Terraform or Kibana saved objects.
-- Explore shipping database-stored `frontend_logs` via periodic export or Logstash JDBC input.
-- Introduce Role-Based Access Control for `/api/logs` using FastAPI dependencies when multi-tenant dashboards are required.
+- Add saved filter presets and CSV export inside the Log Viewer for rapid sharing during incident reviews.
+- Introduce Role-Based Access Control for `/api/logs/backend` using FastAPI dependencies when multi-tenant dashboards are required.
+- Extend ingestion to support optional archiving (e.g., nightly gzip exports) for long-term retention beyond the SQLite window.

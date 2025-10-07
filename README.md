@@ -11,6 +11,7 @@ Modernized control plane for automated BTC/ETH short strangle trading. The platf
 - Analytics APIs producing KPI tiles, chart feeds, and trailing stop telemetry.
 - Async SQLAlchemy data access with a SQLite default (swap the DSN for Postgres/MySQL in production).
 - Feature-flagged logging controls for structured tracing of Delta Exchange interactions.
+- Self-contained backend log ingestion service that tails `logs/backend.log`, stores entries in SQLite, and enforces retention windows.
 
 ### Frontend (React + Vite)
 
@@ -19,6 +20,7 @@ Modernized control plane for automated BTC/ETH short strangle trading. The platf
 - History views summarizing PnL, legs, orders, and trailing performance.
 - Advanced analytics dashboards powered by Ant Design components and React Query.
 - Optional client-side logging hooks for deep troubleshooting.
+- Log Viewer tab for filtering backend events, searching correlation IDs, and expanding structured payloads without leaving the dashboard.
 
 ## Directory Layout
 
