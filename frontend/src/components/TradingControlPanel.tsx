@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -36,6 +36,7 @@ import {
 } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
 import useDeltaSpotPrice from "../hooks/useDeltaSpotPrice";
+import logger from "../utils/logger";
 
 const { Title, Text } = Typography;
 
@@ -153,24 +154,106 @@ export default function TradingControlPanel() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const queryClient = useQueryClient();
 
-  const { data: configs } = useQuery<TradingConfig[]>({
+  const configsQuery = useQuery<TradingConfig[]>({
+    ...sharedQueryOptions,
     queryKey: ["configs"],
-    queryFn: fetchConfigurations,
-    ...sharedQueryOptions
+    queryFn: fetchConfigurations
   });
 
-  const { data: sessions } = useQuery<TradingSessionSummary[]>({
+  const configs = configsQuery.data;
+
+  const sessionsQuery = useQuery<TradingSessionSummary[]>({
+    ...sharedQueryOptions,
     queryKey: ["sessions"],
-    queryFn: fetchTradingSessions,
-    ...sharedQueryOptions
+    queryFn: fetchTradingSessions
   });
+
+  const sessions = sessionsQuery.data;
 
   const runtimeQuery = useQuery<StrategyRuntime>({
+    ...sharedQueryOptions,
     queryKey: ["runtime"],
     queryFn: fetchRuntime,
-    refetchInterval: autoRefresh ? 4000 : false,
-    ...sharedQueryOptions
+    refetchInterval: autoRefresh ? 4000 : false
   });
+
+  const configsSuccessLogRef = useRef<number>(0);
+  const configsErrorLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (configsQuery.data && configsQuery.dataUpdatedAt) {
+      if (configsSuccessLogRef.current !== configsQuery.dataUpdatedAt) {
+        configsSuccessLogRef.current = configsQuery.dataUpdatedAt;
+        logger.debug("Configurations fetched", {
+          event: "ui_configs_loaded",
+          count: configsQuery.data.length
+        });
+      }
+    }
+  }, [configsQuery.data, configsQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (configsQuery.isError && configsQuery.error) {
+      const messageText = configsQuery.error instanceof Error ? configsQuery.error.message : String(configsQuery.error);
+      if (configsErrorLogRef.current !== messageText) {
+        configsErrorLogRef.current = messageText;
+        logger.error("Failed to load configurations", {
+          event: "ui_configs_load_failed",
+          message: messageText
+        });
+      }
+    } else if (!configsQuery.isError) {
+      configsErrorLogRef.current = null;
+    }
+  }, [configsQuery.isError, configsQuery.error]);
+
+  const sessionsErrorLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (sessionsQuery.isError && sessionsQuery.error) {
+      const messageText = sessionsQuery.error instanceof Error ? sessionsQuery.error.message : String(sessionsQuery.error);
+      if (sessionsErrorLogRef.current !== messageText) {
+        sessionsErrorLogRef.current = messageText;
+        logger.error("Failed to load trading sessions", {
+          event: "ui_sessions_load_failed",
+          message: messageText
+        });
+      }
+    } else if (!sessionsQuery.isError) {
+      sessionsErrorLogRef.current = null;
+    }
+  }, [sessionsQuery.isError, sessionsQuery.error]);
+
+  const runtimeSuccessLogRef = useRef<number>(0);
+  const runtimeErrorLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (runtimeQuery.data && runtimeQuery.dataUpdatedAt) {
+      if (runtimeSuccessLogRef.current !== runtimeQuery.dataUpdatedAt) {
+        runtimeSuccessLogRef.current = runtimeQuery.dataUpdatedAt;
+        logger.debug("Runtime snapshot refreshed", {
+          event: "ui_runtime_refreshed",
+          status: runtimeQuery.data.status,
+          strategy_id: runtimeQuery.data.strategy_id,
+          mode: runtimeQuery.data.mode
+        });
+      }
+    }
+  }, [runtimeQuery.data, runtimeQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (runtimeQuery.isError && runtimeQuery.error) {
+      const messageText = runtimeQuery.error instanceof Error ? runtimeQuery.error.message : String(runtimeQuery.error);
+      if (runtimeErrorLogRef.current !== messageText) {
+        runtimeErrorLogRef.current = messageText;
+        logger.error("Failed to refresh runtime", {
+          event: "ui_runtime_refresh_failed",
+          message: messageText
+        });
+      }
+    } else if (!runtimeQuery.isError) {
+      runtimeErrorLogRef.current = null;
+    }
+  }, [runtimeQuery.isError, runtimeQuery.error]);
+
+  const lastControlActionRef = useRef<TradingControlAction | null>(null);
 
   const runtime = runtimeQuery.data;
   const runtimeLoading = runtimeQuery.isLoading && !runtime;
@@ -206,6 +289,44 @@ export default function TradingControlPanel() {
   const modeTagColor = runtime?.mode === "live" ? "green" : runtime?.mode === "simulation" ? "orange" : "default";
 
   const { price: spotPrice, lastUpdated: spotUpdatedAt, isConnected: spotConnected, error: spotError } = useDeltaSpotPrice();
+  const spotUpdateRef = useRef<number | null>(null);
+  const spotConnectionRef = useRef<boolean | null>(null);
+  const spotErrorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (spotUpdatedAt) {
+      const timestamp = spotUpdatedAt.getTime();
+      if (spotUpdateRef.current !== timestamp) {
+        spotUpdateRef.current = timestamp;
+        logger.debug("Spot price update received", {
+          event: "ui_spot_price_update",
+          price: spotPrice,
+          updated_at: spotUpdatedAt.toISOString()
+        });
+      }
+    }
+  }, [spotPrice, spotUpdatedAt]);
+
+  useEffect(() => {
+    if (spotConnected !== spotConnectionRef.current) {
+      spotConnectionRef.current = spotConnected;
+      logger.info("Spot price connection state changed", {
+        event: "ui_spot_connection_state",
+        connected: spotConnected
+      });
+    }
+  }, [spotConnected]);
+
+  useEffect(() => {
+    if (spotError && spotErrorRef.current !== spotError) {
+      spotErrorRef.current = spotError;
+      logger.error("Spot price stream error", {
+        event: "ui_spot_price_error",
+        message: spotError
+      });
+    } else if (!spotError) {
+      spotErrorRef.current = null;
+    }
+  }, [spotError]);
   const formattedSpotPrice = useMemo(
     () =>
       spotPrice !== null
@@ -220,21 +341,55 @@ export default function TradingControlPanel() {
       if (!activeConfig) throw new Error("Activate a configuration first");
       return controlTrading(action, activeConfig.id);
     },
-    onSuccess: (result) => {
+    onMutate: ({ action }) => {
+      lastControlActionRef.current = action;
+      logger.info("Trading control mutation submitted", {
+        event: "ui_trading_control_requested",
+        action,
+        configuration_id: activeConfig?.id ?? null,
+        strategy_id: runtime?.strategy_id ?? null
+      });
+    },
+    onSuccess: (result, variables) => {
       message.success(result.message);
+      logger.info("Trading control mutation succeeded", {
+        event: "ui_trading_control_success",
+        action: variables.action,
+        strategy_id: result.strategy_id ?? runtime?.strategy_id ?? null,
+        status: result.status
+      });
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
       queryClient.invalidateQueries({ queryKey: ["runtime"] });
+    },
+    onError: (error, variables) => {
+      const messageText = error instanceof Error ? error.message : String(error);
+      logger.error("Trading control mutation failed", {
+        event: "ui_trading_control_failed",
+        action: variables?.action ?? lastControlActionRef.current,
+        configuration_id: activeConfig?.id ?? null,
+        message: messageText
+      });
+      message.error(messageText);
     }
   });
 
   const toggleAutoRefresh = (checked: boolean) => {
     setAutoRefresh(checked);
+    logger.info("Auto-refresh toggled", {
+      event: "ui_runtime_auto_refresh_toggled",
+      enabled: checked
+    });
     if (checked) {
       queryClient.invalidateQueries({ queryKey: ["runtime"] });
     }
   };
 
   const handleControlAction = (action: TradingControlAction) => {
+    logger.info("Trading control action triggered", {
+      event: "ui_trading_control_invoked",
+      action,
+      configuration_id: activeConfig?.id ?? null
+    });
     controlMutation.mutate({ action });
   };
 
@@ -298,15 +453,6 @@ export default function TradingControlPanel() {
           trailingMaxSeenPct !== null ? ` (${formatPercent(trailingMaxSeenPct)}%)` : ""
         }`
       : null;
-  const trailingSummary = trailingEnabled
-    ? [
-        "Enabled",
-        trailingLevelPct > 0 ? `Level ${formatPercent(trailingLevelPct)}%` : null,
-        trailingMaxSeenDisplay
-      ]
-        .filter(Boolean)
-        .join(" · ")
-    : "Disabled";
   const trailingDetail = trailingEnabled
     ? trailingLevelPct > 0
       ? `Trailing SL active at ${formatPercent(trailingLevelPct)}%`

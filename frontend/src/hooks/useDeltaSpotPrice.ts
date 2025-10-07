@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import logger from "../utils/logger";
 
 type SpotPriceHookReturn = {
   price: number | null;
@@ -133,12 +134,18 @@ export default function useDeltaSpotPrice(symbol: string = DEFAULT_SYMBOL): Spot
             setLastUpdated(new Date(extracted.timestamp));
           }
         } catch (parseError) {
-          console.warn("[SpotPrice] Failed to parse message", parseError, event.data);
+          logger.warn("Spot price message parse failure", {
+            event: "ui_spot_price_parse_failure",
+            message: parseError instanceof Error ? parseError.message : String(parseError)
+          });
         }
       };
 
       ws.onerror = (event) => {
-        console.warn("[SpotPrice] WebSocket error", event);
+        logger.error("Spot price WebSocket error", {
+          event: "ui_spot_price_socket_error",
+          detail: String(event)
+        });
         if (didUnmount) return;
         setError("WebSocket error");
       };
@@ -146,6 +153,9 @@ export default function useDeltaSpotPrice(symbol: string = DEFAULT_SYMBOL): Spot
       ws.onclose = () => {
         if (didUnmount) return;
         setIsConnected(false);
+        logger.info("Spot price socket closed", {
+          event: "ui_spot_price_socket_closed"
+        });
         reconnectRef.current = window.setTimeout(connect, RECONNECT_DELAY_MS);
       };
     };

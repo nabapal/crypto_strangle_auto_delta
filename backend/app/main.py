@@ -6,23 +6,18 @@ import logging
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from .api import analytics, configurations, trading
+from .api import analytics, configurations, logs, trading
 from .core.config import get_settings
 from .core.database import Base, engine
 from .middleware.request_logging import RequestResponseLoggingMiddleware
+from .services.logging_utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    root_logger = logging.getLogger()
-    if not root_logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-        root_logger.addHandler(handler)
-    if root_logger.level > logging.INFO:
-        root_logger.setLevel(logging.INFO)
+    configure_logging(settings.log_level)
 
     delta_logger = logging.getLogger("delta.client")
     delta_logger.setLevel(logging.DEBUG if settings.delta_debug_verbose else logging.INFO)
@@ -39,6 +34,7 @@ def create_app() -> FastAPI:
     application.include_router(configurations.router, prefix=settings.api_prefix)
     application.include_router(trading.router, prefix=settings.api_prefix)
     application.include_router(analytics.router, prefix=settings.api_prefix)
+    application.include_router(logs.router, prefix=settings.api_prefix)
 
     if settings.debug_http_logging:
         logging.getLogger("app.http").setLevel(logging.DEBUG)

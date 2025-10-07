@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
     allowed_origins: List[str] = ["*"]
     debug_http_logging: bool = False
+    log_level: str = "INFO"
+    engine_debug_sample_rate: int = 5
+    tick_log_sample_rate: int = 50
+    log_ingest_api_key: str | None = None
+    log_ingest_max_batch: int = 100
 
     # Trading runtime
     default_underlying: str = "BTC"

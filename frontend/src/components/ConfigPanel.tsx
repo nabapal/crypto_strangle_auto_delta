@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Button,
@@ -32,6 +32,7 @@ import {
   updateConfiguration
 } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
+import logger from "../utils/logger";
 
 const { Title, Text } = Typography;
 
@@ -107,16 +108,51 @@ function mapConfigToForm(config?: TradingConfig) {
   };
 }
 
+type ConfigFormValues = ReturnType<typeof mapConfigToForm>;
+
 export default function ConfigPanel() {
   const [form] = Form.useForm();
   const queryClient = useQueryClient();
   const [selectedConfigId, setSelectedConfigId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const { data: configs, isLoading } = useQuery<TradingConfig[]>({
+  const configsQuery = useQuery<TradingConfig[]>({
     queryKey: ["configs"],
     queryFn: fetchConfigurations,
     ...sharedQueryOptions
   });
+
+  const configs = configsQuery.data;
+  const isLoading = configsQuery.isLoading;
+
+  const configsSuccessRef = useRef<number>(0);
+  const configsErrorRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (configsQuery.data && configsQuery.dataUpdatedAt) {
+      if (configsSuccessRef.current !== configsQuery.dataUpdatedAt) {
+        configsSuccessRef.current = configsQuery.dataUpdatedAt;
+        logger.info("Configurations table refreshed", {
+          event: "ui_configs_loaded",
+          count: configsQuery.data.length
+        });
+      }
+    }
+  }, [configsQuery.data, configsQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (configsQuery.isError && configsQuery.error) {
+      const messageText = configsQuery.error instanceof Error ? configsQuery.error.message : String(configsQuery.error);
+      if (configsErrorRef.current !== messageText) {
+        configsErrorRef.current = messageText;
+        logger.error("Failed to load configurations", {
+          event: "ui_configs_load_failed",
+          message: messageText
+        });
+      }
+    } else if (!configsQuery.isError) {
+      configsErrorRef.current = null;
+    }
+  }, [configsQuery.isError, configsQuery.error]);
 
   const activeConfig = useMemo(
     () => configs?.find((item: TradingConfig) => item.is_active) ?? null,
@@ -152,68 +188,160 @@ export default function ConfigPanel() {
     form.setFieldsValue(mapConfigToForm(selectedConfig ?? undefined));
   }, [selectedConfig, form]);
 
-  const createMutation = useMutation({
+  const createMutation = useMutation<TradingConfig, Error, Partial<TradingConfig>>({
     mutationFn: createConfiguration,
+    onMutate: (payload) => {
+      logger.info("Create configuration requested", {
+        event: "ui_config_create_requested",
+        name: payload.name,
+        underlying: payload.underlying,
+        has_trailing_rules: Boolean(payload.trailing_rules)
+      });
+    },
     onSuccess: (config) => {
       message.success("Configuration created");
+      logger.info("Configuration created successfully", {
+        event: "ui_config_create_succeeded",
+        config_id: config?.id,
+        name: config?.name
+      });
       queryClient.invalidateQueries({ queryKey: ["configs"] });
       if (config?.id) {
         setSelectedConfigId(config.id);
         form.setFieldsValue(mapConfigToForm(config));
       }
-    }
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: number; payload: Partial<TradingConfig> }) => updateConfiguration(id, payload),
-    onSuccess: (config) => {
-      message.success("Configuration updated");
-      queryClient.invalidateQueries({ queryKey: ["configs"] });
-      if (config?.id) {
-        setSelectedConfigId(config.id);
-        form.setFieldsValue(mapConfigToForm(config));
-      }
-    }
-  });
-
-  const activateMutation = useMutation({
-    mutationFn: ({ id }: { id: number }) => activateConfiguration(id),
-    onSuccess: () => {
-      message.success("Active configuration updated");
-      queryClient.invalidateQueries({ queryKey: ["configs"] });
-    }
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: async (configId: number) => {
-      await deleteConfiguration(configId);
-      return configId;
     },
-    onSuccess: (_result, configId) => {
-      message.success("Configuration deleted");
-      queryClient.invalidateQueries({ queryKey: ["configs"] });
-      setSelectedConfigId((current) => (current === configId ? null : current));
-      form.setFieldsValue(mapConfigToForm());
-    },
-    onError: (error: unknown) => {
-      const messageText = error instanceof Error ? error.message : "Failed to delete configuration";
+    onError: (error) => {
+      const messageText = error instanceof Error ? error.message : String(error);
+      logger.error("Configuration create failed", {
+        event: "ui_config_create_failed",
+        message: messageText
+      });
       message.error(messageText);
     }
   });
 
-  const handleSubmit = async (values: any) => {
-    const formattedTrailingRules = (values.trailing_rules as Array<{ trigger: number; level: number }>).reduce(
+  const updateMutation = useMutation<
+    TradingConfig,
+    Error,
+    { id: number; payload: Partial<TradingConfig> }
+  >({
+    mutationFn: ({ id, payload }) => updateConfiguration(id, payload),
+    onMutate: ({ id }) => {
+      logger.info("Update configuration requested", {
+        event: "ui_config_update_requested",
+        config_id: id
+      });
+    },
+    onSuccess: (config) => {
+      message.success("Configuration updated");
+      logger.info("Configuration updated", {
+        event: "ui_config_update_succeeded",
+        config_id: config?.id,
+        name: config?.name
+      });
+      queryClient.invalidateQueries({ queryKey: ["configs"] });
+      if (config?.id) {
+        setSelectedConfigId(config.id);
+        form.setFieldsValue(mapConfigToForm(config));
+      }
+    },
+    onError: (error, variables) => {
+      const messageText = error instanceof Error ? error.message : String(error);
+      logger.error("Configuration update failed", {
+        event: "ui_config_update_failed",
+        config_id: variables?.id,
+        message: messageText
+      });
+      message.error(messageText);
+    }
+  });
+
+  const activateMutation = useMutation<TradingConfig, Error, { id: number }>({
+    mutationFn: ({ id }) => activateConfiguration(id),
+    onMutate: ({ id }) => {
+      logger.info("Activate configuration requested", {
+        event: "ui_config_activate_requested",
+        config_id: id
+      });
+    },
+    onSuccess: (config, variables) => {
+      message.success("Active configuration updated");
+      logger.info("Configuration activated", {
+        event: "ui_config_activate_succeeded",
+        config_id: variables.id
+      });
+      queryClient.invalidateQueries({ queryKey: ["configs"] });
+      if (config?.id) {
+        setSelectedConfigId(config.id);
+      }
+    },
+    onError: (error, variables) => {
+      const messageText = error instanceof Error ? error.message : String(error);
+      logger.error("Activate configuration failed", {
+        event: "ui_config_activate_failed",
+        config_id: variables?.id,
+        message: messageText
+      });
+      message.error(messageText);
+    }
+  });
+
+  const deleteMutation = useMutation<number, Error, number>({
+    mutationFn: async (configId: number) => {
+      await deleteConfiguration(configId);
+      return configId;
+    },
+    onMutate: (configId) => {
+      logger.info("Delete configuration requested", {
+        event: "ui_config_delete_requested",
+        config_id: configId
+      });
+    },
+    onSuccess: (_result, configId) => {
+      message.success("Configuration deleted");
+      logger.warn("Configuration deleted", {
+        event: "ui_config_delete_succeeded",
+        config_id: configId
+      });
+      queryClient.invalidateQueries({ queryKey: ["configs"] });
+      setSelectedConfigId((current) => (current === configId ? null : current));
+      form.setFieldsValue(mapConfigToForm());
+    },
+    onError: (error, configId) => {
+      const messageText = error instanceof Error ? error.message : "Failed to delete configuration";
+      logger.error("Configuration delete failed", {
+        event: "ui_config_delete_failed",
+        config_id: configId,
+        message: messageText
+      });
+      message.error(messageText);
+    }
+  });
+
+  const handleSubmit = async (values: ConfigFormValues) => {
+    logger.info("Configuration form submitted", {
+      event: "ui_config_form_submitted",
+      has_selected_config: Boolean(selectedConfig?.id)
+    });
+    const formattedTrailingRules = values.trailing_rules.reduce(
       (acc, rule) => ({ ...acc, [rule.trigger.toFixed(2)]: rule.level }),
       {} as Record<string, number>
     );
-    const payload = {
-      ...values,
-      max_loss_pct: preparePercentPayload(values.max_loss_pct),
-      max_profit_pct: preparePercentPayload(values.max_profit_pct),
+    const payload: Partial<TradingConfig> = {
+      name: values.name,
+      underlying: values.underlying as TradingConfig["underlying"],
+      delta_range_low: values.delta_range_low,
+      delta_range_high: values.delta_range_high,
       trade_time_ist: values.trade_time_ist.format("HH:mm"),
       exit_time_ist: values.exit_time_ist.format("HH:mm"),
-      trailing_rules: formattedTrailingRules,
-      expiry_date: values.expiry_date ? values.expiry_date.format("DD-MM-YYYY") : null
+      expiry_date: values.expiry_date ? values.expiry_date.format("DD-MM-YYYY") : null,
+      quantity: values.quantity,
+      contract_size: values.contract_size,
+      max_loss_pct: preparePercentPayload(values.max_loss_pct),
+      max_profit_pct: preparePercentPayload(values.max_profit_pct),
+      trailing_sl_enabled: values.trailing_sl_enabled,
+      trailing_rules: formattedTrailingRules
     };
 
     if (!selectedConfig) {
@@ -229,12 +357,19 @@ export default function ConfigPanel() {
   };
 
   const handleSelectConfig = (configId: number) => {
+    logger.debug("Configuration row selected", {
+      event: "ui_config_selected",
+      config_id: configId
+    });
     setSelectedConfigId(configId);
     const config = configs?.find((item) => item.id === configId);
     form.setFieldsValue(mapConfigToForm(config));
   };
 
   const handleCreateNew = () => {
+    logger.info("Create new configuration requested", {
+      event: "ui_config_create_new"
+    });
     setSelectedConfigId(null);
     form.setFieldsValue(mapConfigToForm());
   };

@@ -5,73 +5,96 @@
 - Capture every critical decision, market data input, order lifecycle event, and error with enough context to reproduce issues.
 - Correlate events across services via shared identifiers and stream logs to an Elastic Stack (Elasticsearch, Logstash, Kibana) deployment for analysis and alerting.
 
-## Phase 1 – Backend Foundations
+## Status Snapshot (October 7 2025)
+- ✅ **Phase 1 – Backend Foundations**: Structured logging, correlation IDs, task monitoring, and dependency instrumentation are live and covered by tests.
+- ✅ **Phase 2 – Frontend Telemetry**: Unified logger shipped, UI flows instrumented, `/api/logs` ingest endpoint online, and remote batching enabled with API-key protection.
+- ✅ **Phase 3 – Aggregation & Operations**: Dockerised ELK stack, Filebeat shipper, retention/alerting guidance, and an operational runbook are available in `infra/logging/`.
 
-### 1. Structured logging baseline
-- Enable JSON formatting in `backend/app/main.py` (e.g., using `python-json-logger` or `structlog`) for consistent ingestion.
-- Extend `RequestResponseLoggingMiddleware` to generate a `correlation_id` per request and stash it in a `contextvars.ContextVar` so downstream modules automatically include it.
-- Add helper utilities (`backend/app/services/logging_utils.py`) to inject common context (strategy ID, session ID, configuration name, execution mode) into every log statement.
+---
 
-### 2. Trading engine instrumentation
-- `_run_loop` / `_monitor_positions`: log cycle start/end, portfolio notional, latest PnL, trailing thresholds evaluated, decision outcomes, and latency.
-- `_check_exit_conditions`: emit evaluation of each rule (max loss, max profit, trailing) with raw values and triggers.
-- `_update_trailing_state`: log previous and new trailing levels, profit milestones, and rules responsible for changes.
-- `_refresh_position_analytics`: capture quote freshness, symbol list, mark price sources (stream vs. REST fallback), and fallback warnings.
-- `_place_live_order`, `_record_live_orders`, `_record_simulated_orders`, `_force_exit`, `_finalize_session_summary`: log order IDs, side, price, size, fills, retries, failure reasons, and exit rationale.
+## Phase 1 – Backend Foundations (Completed)
 
-### 3. External dependencies
-- `DeltaExchangeClient`: augment existing logs with instrument symbols, response body size (truncated), and latency buckets; log authentication status and rate-limit headers when present.
-- `OptionPriceStream`: instrument connect/disconnect, subscription updates, heartbeat/liveness checks, message decode errors, and reconnection attempts.
-- Database layer: use SQLAlchemy events to warn on slow queries and connection pool exhaustion.
+### Structured logging baseline
+- `backend/app/services/logging_utils.py` configures a `StructuredJsonFormatter`, context propagation via `ContextVar`, and request correlation support.
+- `backend/app/main.py` bootstraps logging once, enforces JSON output, and respects the `LOG_LEVEL` setting.
+- `backend/app/middleware/request_logging.py` now issues correlation IDs, injects HTTP metadata, and mirrors IDs back to clients.
 
-### 4. Error handling & controls
-- Wrap background tasks with `logger.exception` including context IDs to avoid silent failures.
-- Make log level configurable via environment (e.g., `LOG_LEVEL=INFO`) and add sampling for noisy debug statements (e.g., every Nth market tick).
-- Add unit tests (pytest + `caplog`) for critical flows to ensure required log entries remain.
+### Trading engine instrumentation
+- `backend/app/services/trading_engine.py` logs loop iterations, exit rules, trailing state transitions, and order lifecycles with sampled debug output via `LogSampler`.
+- Background tasks are wrapped with `monitor_task` to surface latent failures.
 
-## Phase 2 – Frontend Telemetry
+### External dependencies
+- `backend/app/services/delta_exchange_client.py` captures request/response metrics, rate-limit headers, and authentication state.
+- `backend/app/services/delta_websocket_client.py` emits connection, subscription, heartbeat, and sampled quote events.
+- `backend/app/core/database.py` warns on slow queries and pool exhaustion using SQLAlchemy events.
 
-### 1. Unified logger
-- Introduce `src/utils/logger.ts` with leveled logging, environment-aware sinks (console in dev, remote ingestion in prod), and metadata injection (session ID, app version, user identifier).
-- Replace ad-hoc `console.*` usage, including API debug options, with the unified logger.
+### Error handling & controls
+- Log sampling rates (`ENGINE_DEBUG_SAMPLE_RATE`, `TICK_LOG_SAMPLE_RATE`) are tunable from configuration.
+- `tests/test_logging_controls.py` validates sampling, middleware correlation, and task monitoring behaviour.
 
-### 2. Instrument application flows
-- API client interceptors: log request/response timings, headers, payload summaries, and bubble correlation IDs from backend headers.
-- Components:
-  - `TradingControlPanel`: user actions (start/stop/panic), state transitions, trailing level updates, and error toasts.
-  - `AnalyticsDashboard` / `TradeHistory`: data fetch successes/failures, cache hits/misses, chart update timing.
-- Hooks: `useDeltaSpotPrice` to emit connection state, retry strategy, and stale data detection.
-- Global error boundary: capture component stack traces and forward to logger + user notification.
+---
 
-### 3. Log forwarding
-- Provide `/api/logs` endpoint (authenticated) to accept frontend log batches when third-party logging isnt available; store with `source=frontend` tag.
-- Implement client-side rate limiting and deduplication to avoid bursts.
+## Phase 2 – Frontend Telemetry (Completed)
 
-## Phase 3 – Aggregation & Operations
+### Unified logger & interceptors
+- `frontend/src/utils/logger.ts` centralises batching, rate limiting, correlation tracking, and remote forwarding (secured by `VITE_LOG_API_KEY`).
+- `frontend/src/api/client.ts` applies Axios interceptors that log request/response metadata and propagate correlation IDs from HTTP headers.
 
-### 1. Centralized sink
-- Deploy the Elastic Stack (ELK) on the free Basic license using the official Docker images (docker-compose bundle with Elasticsearch, Kibana, and optional Logstash).
-- Configure Filebeat or Fluent Bit to ship JSON logs into Elasticsearch indices, retaining schema: `timestamp`, `level`, `service`, `source`, `strategy_id`, `session_id`, `correlation_id`, `event`, `payload`.
+### Component & hook instrumentation
+- `TradingControlPanel`, `AnalyticsDashboard`, `TradeHistoryTable`, and `ConfigPanel` emit structured events for user actions, auto-refresh cycles, query cache hits/misses, and mutation outcomes.
+- `frontend/src/hooks/useDeltaSpotPrice.ts` reports websocket connectivity, retries, and parse errors via the unified logger.
+- `frontend/src/components/ErrorBoundary.tsx` captures React render failures and forwards them to the telemetry pipeline.
 
-### 2. Retention & alerting
-- Define retention policy (e.g., 30-day hot, 180-day cold archives).
-- Alerting rules: surge in Delta API failures, repeated strategy exits with `error` reason, frontend error boundary triggers, heartbeat gaps from price stream.
-- Dashboards/KPIs: order lifecycle timelines, trailing SL activations, API latency percentiles, websocket uptime.
+### Frontend log ingestion
+- `/api/logs/batch` (`backend/app/api/logs.py`) accepts authenticated log batches, persists them in the `frontend_logs` table, and mirrors entries to server-side structured logs.
+- Settings: `LOG_INGEST_API_KEY` (required header `X-Log-API-Key`) and `LOG_INGEST_MAX_BATCH` cap inbound traffic; the frontend supplies its key via `VITE_LOG_API_KEY`.
+- `frontend/src/env.d.ts` reflects all log-related environment variables for TypeScript safety.
+- New pytest coverage (`tests/test_log_ingest.py`) verifies authentication, persistence, and batch limits.
 
-### 3. Validation & rollout
-- Document operational runbook explaining how to trace a correlation ID across services, toggle log levels, and query common issues.
-- Stage rollout:
-  1. Implement backend structured logging and correlation IDs.
-  2. Instrument trading engine critical paths.
-  3. Launch frontend logger and backend log ingestion endpoint.
-  4. Integrate with aggregator, configure alerts/dashboards.
-  5. Conduct verification run (simulated session) ensuring each checkpoint emits logs with proper context.
+---
 
-## Open Decisions
-- Authentication/authorization model for `/api/logs` endpoint.
-- Sampling thresholds for high-volume data.
+## Phase 3 – Aggregation & Operations (Completed)
+
+### Centralised sink assets
+- `infra/logging/docker-compose.yml` spins up Elasticsearch 8.15, Kibana, and Logstash with single-node defaults.
+- `infra/logging/logstash/pipeline/logstash.conf` ingests Beats traffic on port 5044, normalises fields, and indexes documents into `delta-logs-*` indices.
+- `infra/logging/filebeat.yml` tails `logs/backend.log` and `logs/frontend.log` as newline-delimited JSON and forwards them to Logstash.
+
+To launch the stack locally:
+```bash
+cd infra/logging
+docker compose up -d
+# Start Filebeat in a separate shell
+filebeat -e -c filebeat.yml
+```
+
+### Retention & alerting
+- Default Kibana data views: `delta-logs-*` with runtime fields for `strategy_id`, `session_id`, and `event`.
+- Hot retention: 30 days in the primary index; configure ILM in Kibana → Stack Management → Index Lifecycle to roll to cold storage at 180 days.
+- Recommended Kibana alert rules:
+  - **Delta API Failure Surge**: threshold on `event:delta_request_failed` with 5+ hits in 1 minute.
+  - **Strategy Error Exits**: `event:strategy_exit` & `status:error` to warn operations.
+  - **Frontend Error Boundary**: `event:ui_error_boundary_triggered` to notify incident response.
+  - **Websocket Heartbeat Gap**: absence of `websocket_quote_heartbeat` for 3 minutes.
+
+### Validation & rollout checklist
+1. Deploy backend and frontend with `LOG_LEVEL=INFO`, `LOG_INGEST_API_KEY`, and `VITE_LOG_API_KEY` configured.
+2. Run a simulated session; verify correlation IDs link API, engine, and UI events in Kibana Discover.
+3. Confirm Filebeat shipping via Logstash by checking Kibana dashboard panels for PnL timelines and websocket uptime.
+4. Enable the alert rules above and test notification channels.
+
+---
+
+## Operational Runbook
+1. **Trace a correlation ID**: Search `correlation_id:"<value>"` across `delta-logs-*` to follow a user journey from the browser through FastAPI and the trading engine.
+2. **Toggle log levels**: Update the `LOG_LEVEL` environment variable on the backend deployment and recycle the process. For frontend verbosity, adjust `VITE_ENABLE_API_DEBUG` and rebuild.
+3. **Purge noisy telemetry**: Tune `VITE_LOG_DEDUP_WINDOW` / `VITE_LOG_DEDUP_THRESHOLD` or backend sampling intervals to reduce chatter before re-running Filebeat.
+4. **Respond to persistent frontend errors**: Filter for `event:ui_error_boundary_triggered`, inspect `data.component_stack`, follow the matching correlation ID into backend logs, and create a Jira incident if reproducible.
+5. **Monitor ingestion health**: Kibana → Stack Monitoring for Elasticsearch/Logstash stats; Filebeat logs for shipper back-pressure; backend `/api/logs/batch` HTTP 4xx spikes require frontend key rotation.
+
+---
 
 ## Next Steps
-1. Implement Phase 1 foundation with JSON logging in place.
-2. Deploy ELK Basic via Docker and configure log shippers.
-3. Schedule telemetry rollout for frontend and align with security review for client log ingestion.
+- Automate ILM and alert provisioning via Terraform or Kibana saved objects.
+- Explore shipping database-stored `frontend_logs` via periodic export or Logstash JDBC input.
+- Introduce Role-Based Access Control for `/api/logs` using FastAPI dependencies when multi-tenant dashboards are required.

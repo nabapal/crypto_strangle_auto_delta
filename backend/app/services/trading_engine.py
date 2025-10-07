@@ -14,9 +14,13 @@ from datetime import date, datetime, time as time_obj, timezone, timedelta
 from typing import Any, Dict, List, Optional, cast
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from ..core.config import get_settings
+from ..core.database import async_session as default_session_factory
 from ..models import OrderLedger, PositionLedger, StrategySession, TradingConfiguration
 from ..schemas.trading import AnalyticsResponse, AnalyticsKpi
+from ..services.logging_utils import LogSampler, bind_log_context, monitor_task, reset_log_context
 from .delta_exchange_client import DeltaExchangeClient
 from .delta_websocket_client import OptionPriceStream
 
@@ -82,12 +86,13 @@ class StrategyRuntimeState:
     entry_summary: Dict[str, Any] = field(default_factory=dict)
     last_monitor_snapshot: Dict[str, Any] = field(default_factory=dict)
     exit_reason: str | None = None
+    log_tokens: list = field(default_factory=list)
 
 
 class TradingEngine:
     """Coordinates the automated short strangle execution loop."""
 
-    def __init__(self):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None):
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._state: StrategyRuntimeState | None = None
@@ -95,6 +100,9 @@ class TradingEngine:
         self._price_stream: OptionPriceStream | None = None
         self._stop_event = asyncio.Event()
         self._settings = get_settings()
+        self._loop_iteration = 0
+        self._debug_sampler = LogSampler(self._settings.engine_debug_sample_rate)
+        self._session_factory: async_sessionmaker[AsyncSession] = session_factory or default_session_factory
 
     @staticmethod
     def _normalize_percent(value: float | None) -> float:
@@ -140,9 +148,17 @@ class TradingEngine:
             strategy_id = session.strategy_id
             self._stop_event.clear()
             self._settings = get_settings()
+            self._debug_sampler = LogSampler(self._settings.engine_debug_sample_rate)
             self._client = DeltaExchangeClient()
             self._state = StrategyRuntimeState(strategy_id=strategy_id, config=config, session=session)
             self._state.scheduled_entry_at = self._compute_scheduled_entry(config)
+            context_tokens = bind_log_context(
+                strategy_id=strategy_id,
+                session_id=session.id,
+                config_name=getattr(config, "name", None),
+                execution_mode="live" if self._settings.delta_live_trading else "simulation",
+            )
+            self._state.log_tokens.extend(context_tokens)
             mode = "live" if self._settings.delta_live_trading else "simulation"
             self._state.entry_summary = {
                 "status": "waiting",
@@ -158,7 +174,16 @@ class TradingEngine:
                     "entry": self._json_ready(self._state.entry_summary),
                 },
             )
-            self._task = asyncio.create_task(self._run_loop())
+            self._task = asyncio.create_task(self._run_loop(), name=f"trading-engine-{strategy_id}")
+            monitor_task(
+                self._task,
+                logger,
+                context={
+                    "event": "engine_background_failure",
+                    "strategy_id": strategy_id,
+                    "session_id": session.id,
+                },
+            )
             logger.info("Strategy %s started", strategy_id)
             return strategy_id
 
@@ -170,10 +195,14 @@ class TradingEngine:
             self._stop_event.set()
             await self._task
             self._task = None
+            state = self._state
             self._state = None
             if self._client:
                 await self._client.close()
                 self._client = None
+            if state and state.log_tokens:
+                reset_log_context(state.log_tokens)
+                state.log_tokens.clear()
 
     async def panic_close(self) -> str | None:
         async with self._lock:
@@ -219,6 +248,10 @@ class TradingEngine:
             if self._client:
                 await self._client.close()
                 self._client = None
+
+            if state.log_tokens:
+                reset_log_context(state.log_tokens)
+                state.log_tokens.clear()
 
             return strategy_id
 
@@ -453,22 +486,95 @@ class TradingEngine:
             chart_data={"pnl": self._state.pnl_history[-100:]},
         )
 
+    async def _persist_session_state(self, context: str) -> None:
+        state = self._state
+        if state is None:
+            return
+
+        merged_session: StrategySession | None = None
+        try:
+            async with self._session_factory() as db_session:
+                merged_session = await db_session.merge(state.session)
+                await db_session.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to persist strategy session state",
+                extra={
+                    "event": "session_persist_failed",
+                    "context": context,
+                    "strategy_id": getattr(state, "strategy_id", None),
+                },
+            )
+            return
+
+        if merged_session is not None:
+            state.session = merged_session
+
     async def _run_loop(self) -> None:
         assert self._state is not None
         settings = self._settings
-        logger.info("Running trading loop for %s", self._state.strategy_id)
+        logger.info(
+            "Trading loop started",
+            extra={
+                "event": "engine_cycle_start",
+                "sleep_interval_seconds": getattr(settings, "default_expiry_buffer_hours", 5),
+            },
+        )
         try:
+            self._loop_iteration = 0
             while not self._stop_event.is_set():
+                self._loop_iteration += 1
+                cycle_id = self._loop_iteration
+                cycle_started_at = time.perf_counter()
+                state = self._state
+                if self._debug_sampler.should_log("cycle_dispatch"):
+                    logger.debug(
+                        "Cycle %s dispatched",
+                        cycle_id,
+                        extra={
+                            "event": "engine_cycle_dispatch",
+                            "cycle_id": cycle_id,
+                            "strategy_active": bool(state and state.active),
+                            "pending_stop": self._stop_event.is_set(),
+                            "scheduled_entry_at": self._serialize_datetime(state.scheduled_entry_at) if state else None,
+                        },
+                    )
                 now = datetime.now(UTC)
                 if not self._state.active:
                     if self._ready_for_entry(now):
                         await self._execute_entry()
                     else:
+                        if self._debug_sampler.should_log("cycle_wait"):
+                            logger.debug(
+                                "Cycle %s sleeping awaiting entry window",
+                                cycle_id,
+                                extra={
+                                    "event": "engine_cycle_waiting",
+                                    "cycle_id": cycle_id,
+                                    "current_time": now.isoformat(),
+                                    "scheduled_entry_at": self._serialize_datetime(self._state.scheduled_entry_at),
+                                },
+                            )
                         await asyncio.sleep(5)
                         continue
 
                 await self._monitor_positions()
-                await asyncio.sleep(settings.default_expiry_buffer_hours)
+                duration_ms = (time.perf_counter() - cycle_started_at) * 1000
+                latest_pnl = self._state.pnl_history[-1] if self._state and self._state.pnl_history else None
+                if self._debug_sampler.should_log("cycle_complete"):
+                    logger.debug(
+                        "Cycle %s completed",
+                        cycle_id,
+                        extra={
+                            "event": "engine_cycle_complete",
+                            "cycle_id": cycle_id,
+                            "cycle_duration_ms": duration_ms,
+                            "latest_pnl": latest_pnl,
+                            "portfolio_notional": self._state.portfolio_notional if self._state else None,
+                            "trailing_level_pct": self._state.trailing_level if self._state else None,
+                        },
+                    )
+                await asyncio.sleep(getattr(settings, "default_expiry_buffer_hours", 5))
         except asyncio.CancelledError:
             logger.info("Strategy loop cancelled")
             raise
@@ -479,7 +585,11 @@ class TradingEngine:
                 await self._cleanup()
             finally:
                 self._task = None
+                state = self._state
                 self._state = None
+                if state and state.log_tokens:
+                    reset_log_context(state.log_tokens)
+                    state.log_tokens.clear()
 
     def _ready_for_entry(self, current_time: datetime) -> bool:
         state = self._state
@@ -705,6 +815,16 @@ class TradingEngine:
     async def _monitor_positions(self) -> None:
         state = self._state
         assert state is not None
+        monitor_started = time.perf_counter()
+        open_positions_count = sum(1 for pos in state.session.positions if pos.exit_time is None)
+        logger.debug(
+            "Refreshing position analytics",
+            extra={
+                "event": "monitor_positions_start",
+                "open_positions": open_positions_count,
+                "mark_prices_cached": len(state.mark_prices),
+            },
+        )
         positions_payload, totals = await self._refresh_position_analytics(state)
         snapshot_time = datetime.now(UTC)
         pnl_snapshot = {"timestamp": snapshot_time.isoformat(), "pnl": totals["total_pnl"]}
@@ -771,9 +891,33 @@ class TradingEngine:
             },
         )
 
+        monitor_duration_ms = (time.perf_counter() - monitor_started) * 1000
+        logger.debug(
+            "Position analytics refreshed",
+            extra={
+                "event": "monitor_positions_complete",
+                "open_positions": open_positions_count,
+                "monitor_duration_ms": monitor_duration_ms,
+                "totals": totals,
+                "trailing_level_pct": state.trailing_level,
+                "max_profit_seen_pct": state.max_profit_seen_pct,
+            },
+        )
+
+        await self._persist_session_state("monitor_positions")
+
         exit_reason = self._check_exit_conditions()
         if exit_reason:
-            logger.info("Exit condition met: %s", exit_reason)
+            logger.info(
+                "Exit condition satisfied",
+                extra={
+                    "event": "exit_condition_triggered",
+                    "exit_reason": exit_reason,
+                    "latest_totals": totals,
+                    "trailing_level_pct": state.trailing_level,
+                    "max_profit_seen_pct": state.max_profit_seen_pct,
+                },
+            )
             state.exit_reason = exit_reason
             await self._force_exit()
             state.active = False
@@ -791,6 +935,14 @@ class TradingEngine:
     async def _force_exit(self) -> None:
         state = self._state
         assert state is not None
+        logger.info(
+            "Force exit initiated",
+            extra={
+                "event": "force_exit_start",
+                "exit_reason": state.exit_reason,
+                "open_positions": [pos.symbol for pos in state.session.positions if pos.exit_time is None],
+            },
+        )
         live_orders: List[tuple[OptionContract, OrderStrategyOutcome, str]] = []
         if self._settings.delta_live_trading and self._client:
             live_orders = await self._close_live_positions(state)
@@ -808,7 +960,18 @@ class TradingEngine:
                 )
 
         reason = state.exit_reason or "forced_exit"
-        self._finalize_session_summary(state, reason)
+        summary = self._finalize_session_summary(state, reason)
+        logger.info(
+            "Force exit complete",
+            extra={
+                "event": "force_exit_complete",
+                "exit_reason": reason,
+                "legs_closed": len(summary.get("legs", [])),
+                "final_totals": summary.get("totals"),
+            },
+        )
+
+        await self._persist_session_state("force_exit")
 
     def _check_exit_conditions(self) -> Optional[str]:
         state = self._state
@@ -822,27 +985,58 @@ class TradingEngine:
         latest_pct = self._percent_from_amount(latest, notional)
         max_loss_pct = self._normalize_percent(getattr(config, "max_loss_pct", 0.0))
         max_profit_pct = self._normalize_percent(getattr(config, "max_profit_pct", 0.0))
+        rule_results: Dict[str, Any] = {
+            "latest_abs": latest,
+            "latest_pct": latest_pct,
+            "portfolio_notional": notional,
+            "max_loss_pct": max_loss_pct,
+            "max_profit_pct": max_profit_pct,
+        }
 
+        triggered: str | None = None
         if max_loss_pct > 0:
             if notional > 0 and latest_pct <= -max_loss_pct:
-                return "max_loss"
-            if notional <= 0 and latest <= -max_loss_pct:
-                return "max_loss"
+                triggered = "max_loss"
+            if triggered is None and notional <= 0 and latest <= -max_loss_pct:
+                triggered = "max_loss"
+            rule_results["max_loss_triggered"] = triggered == "max_loss"
+        else:
+            rule_results["max_loss_triggered"] = False
 
-        if max_profit_pct > 0:
+        if triggered is None and max_profit_pct > 0:
             if notional > 0 and latest_pct >= max_profit_pct:
-                return "max_profit"
-            if notional <= 0 and latest >= max_profit_pct:
-                return "max_profit"
+                triggered = "max_profit"
+            if triggered is None and notional <= 0 and latest >= max_profit_pct:
+                triggered = "max_profit"
+            rule_results["max_profit_triggered"] = triggered == "max_profit"
+        else:
+            rule_results["max_profit_triggered"] = False
 
         trailing_enabled = bool(getattr(config, "trailing_sl_enabled", False))
         trailing_level_pct = self._normalize_percent(state.trailing_level or 0.0)
-        if trailing_enabled and trailing_level_pct > 0:
+        rule_results.update(
+            {
+                "trailing_enabled": trailing_enabled,
+                "trailing_level_pct": trailing_level_pct,
+            }
+        )
+        if triggered is None and trailing_enabled and trailing_level_pct > 0:
             if notional > 0 and latest_pct <= trailing_level_pct:
-                return "trailing_sl"
-            if notional <= 0 and latest <= trailing_level_pct:
-                return "trailing_sl"
-        return None
+                triggered = "trailing_sl"
+            if triggered is None and notional <= 0 and latest <= trailing_level_pct:
+                triggered = "trailing_sl"
+        rule_results["trailing_triggered"] = triggered == "trailing_sl"
+
+        logger.debug(
+            "Exit conditions evaluated",
+            extra={
+                "event": "exit_conditions_evaluated",
+                "triggered": triggered,
+                "rules": rule_results,
+            },
+        )
+
+        return triggered
 
     def _build_ticker_params(self, config: TradingConfiguration) -> tuple[dict[str, str], date | None]:
         underlying = str(getattr(config, "underlying", "") or "BTC").upper()
@@ -1038,6 +1232,18 @@ class TradingEngine:
             )
             session.orders.append(order)
             session.positions.append(position)
+            logger.info(
+                "Recorded simulated order",
+                extra={
+                    "event": "order_recorded_simulation",
+                    "symbol": contract.symbol,
+                    "side": "sell",
+                    "filled_price": contract.mid_price,
+                    "quantity": quantity,
+                },
+            )
+
+        await self._persist_session_state("record_simulated_orders")
 
     def _log_selected_contracts(self, contracts: List[OptionContract]) -> None:
         if not contracts or self._state is None:
@@ -1081,10 +1287,11 @@ class TradingEngine:
         best_bid = stream_bid if stream_bid is not None else self._optional_price(contract.best_bid)
         best_ask = stream_ask if stream_ask is not None else self._optional_price(contract.best_ask)
 
-        needs_refresh = (best_bid is None or best_ask is None) and self._client is not None
-        if needs_refresh:
+        client = self._client
+        needs_refresh = (best_bid is None or best_ask is None) and client is not None
+        if needs_refresh and client is not None:
             try:
-                ticker_response = await self._client.get_ticker(contract.symbol)
+                ticker_response = await client.get_ticker(contract.symbol)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "Failed to refresh best bid/ask for %s",
@@ -1164,6 +1371,20 @@ class TradingEngine:
         min_fill_ratio = max(0.0, min(1.0, float(getattr(settings, "delta_partial_fill_threshold", 0.1))))
         timeout_seconds = max(1.0, float(getattr(settings, "delta_order_timeout_seconds", 30.0)))
 
+        logger.debug(
+            "Executing order strategy",
+            extra={
+                "event": "order_strategy_start",
+                "symbol": contract.symbol,
+                "side": side,
+                "requested_size": quantity,
+                "reduce_only": reduce_only,
+                "max_attempts": max_attempts,
+                "timeout_seconds": timeout_seconds,
+                "min_fill_ratio": min_fill_ratio,
+            },
+        )
+
         try:
             product_response = await self._client.get_product(contract.product_id)
             product_info = product_response.get("result") or product_response
@@ -1224,12 +1445,29 @@ class TradingEngine:
                 side,
                 remaining,
                 payload["limit_price"],
+                extra={
+                    "event": "limit_order_submit",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "order_size": remaining,
+                    "limit_price": payload["limit_price"],
+                    "client_order_id": client_order_id,
+                },
             )
 
             try:
                 order_response = await self._client.place_order(payload)
             except Exception:  # noqa: BLE001
-                logger.exception("Limit order attempt %s failed to submit", attempt)
+                logger.exception(
+                    "Limit order attempt %s failed to submit",
+                    attempt,
+                    extra={
+                        "event": "limit_order_submit_failed",
+                        "attempt": attempt,
+                        "order_size": remaining,
+                        "client_order_id": client_order_id,
+                    },
+                )
                 if attempt < max_attempts:
                     await asyncio.sleep(retry_delay)
                 continue
@@ -1272,6 +1510,14 @@ class TradingEngine:
                     filled_amount,
                     quantity,
                     remaining,
+                    extra={
+                        "event": "limit_order_fill",
+                        "attempt": attempt,
+                        "order_id": order_id,
+                        "filled_amount": filled_amount,
+                        "remaining": remaining,
+                        "fill_ratio": fill_ratio,
+                    },
                 )
                 if remaining <= 1e-8:
                     return OrderStrategyOutcome(True, "limit_orders", total_filled, status or order_result, attempts)
@@ -1280,7 +1526,15 @@ class TradingEngine:
                     await self._client.cancel_order(order_id, contract.product_id)
                     attempts[-1]["cancelled"] = True
                 except Exception:  # noqa: BLE001
-                    logger.exception("Failed to cancel limit order %s", order_id)
+                    logger.exception(
+                        "Failed to cancel limit order %s",
+                        order_id,
+                        extra={
+                            "event": "limit_order_cancel_failed",
+                            "order_id": order_id,
+                            "attempt": attempt,
+                        },
+                    )
 
             if remaining <= 1e-8:
                 break
@@ -1290,7 +1544,18 @@ class TradingEngine:
         if remaining <= 1e-8:
             return OrderStrategyOutcome(True, "limit_orders", total_filled, final_status, attempts)
 
-        logger.info("Falling back to market order for %s side=%s remaining=%s", contract.symbol, side, remaining)
+        logger.info(
+            "Falling back to market order for %s side=%s remaining=%s",
+            contract.symbol,
+            side,
+            remaining,
+            extra={
+                "event": "market_fallback_initiated",
+                "symbol": contract.symbol,
+                "side": side,
+                "remaining": remaining,
+            },
+        )
         market_order_id = f"{self._state.strategy_id}-{self._option_kind(contract.contract_type)}-{uuid.uuid4().hex[:6]}-market"
         market_payload: Dict[str, Any] = {
             "product_id": contract.product_id,
@@ -1305,7 +1570,16 @@ class TradingEngine:
         try:
             market_response = await self._client.place_order(market_payload)
         except Exception:  # noqa: BLE001
-            logger.exception("Market fallback failed for %s", contract.symbol)
+            logger.exception(
+                "Market fallback failed for %s",
+                contract.symbol,
+                extra={
+                    "event": "market_fallback_failed",
+                    "symbol": contract.symbol,
+                    "side": side,
+                    "remaining": remaining,
+                },
+            )
             return OrderStrategyOutcome(False, "failed", total_filled, final_status, attempts)
 
         market_result = market_response.get("result") or market_response
@@ -1345,6 +1619,14 @@ class TradingEngine:
             side,
             total_filled,
             max(0.0, quantity - total_filled),
+            extra={
+                "event": "order_strategy_failed",
+                "symbol": contract.symbol,
+                "side": side,
+                "filled_amount": total_filled,
+                "remaining": max(0.0, quantity - total_filled),
+                "attempts": len(attempts),
+            },
         )
         return OrderStrategyOutcome(False, "failed", total_filled, final_status, attempts)
 
@@ -1357,6 +1639,16 @@ class TradingEngine:
     ) -> OrderStrategyOutcome:
         size = float(quantity if quantity is not None else self._config_contracts())
         reduce = bool(reduce_only) if reduce_only is not None else (side.lower() == "buy")
+        logger.debug(
+            "Placing live order",
+            extra={
+                "event": "order_dispatch",
+                "symbol": contract.symbol,
+                "side": side,
+                "requested_size": size,
+                "reduce_only": reduce,
+            },
+        )
         return await self._execute_order_strategy(contract, side, size, reduce)
 
     async def _sync_existing_positions(
@@ -1453,6 +1745,9 @@ class TradingEngine:
                 },
             )
 
+        if synced or live_positions:
+            await self._persist_session_state("sync_existing_positions")
+
     async def _close_live_positions(self, state: StrategyRuntimeState) -> List[tuple[OptionContract, OrderStrategyOutcome, str]]:
         closings: List[tuple[OptionContract, OrderStrategyOutcome, str]] = []
         if not self._client:
@@ -1524,6 +1819,9 @@ class TradingEngine:
         session = self._state.session
         now = datetime.now(UTC)
         contract_size = self._config_contract_size()
+
+        if not orders:
+            return
 
         for contract, outcome, side in orders:
             final_status = outcome.final_status or {}
@@ -1604,6 +1902,22 @@ class TradingEngine:
                         "No matching open position found for %s when recording exit order",
                         contract.symbol,
                     )
+
+            logger.info(
+                "Recorded live order",
+                extra={
+                    "event": "order_recorded_live",
+                    "symbol": contract.symbol,
+                    "side": side,
+                    "order_id": order_id,
+                    "filled_size": outcome.filled_size,
+                    "status": status,
+                    "order_mode": outcome.mode,
+                    "attempt_count": len(attempts),
+                },
+            )
+
+        await self._persist_session_state("record_live_orders")
 
     @staticmethod
     def _option_kind(contract_type: str) -> str:
@@ -1777,6 +2091,13 @@ class TradingEngine:
         now = datetime.now(UTC)
         mode = str(state.entry_summary.get("mode", "simulation")) if state.entry_summary else "simulation"
         client = self._client if mode == "live" and self._client else None
+        quote_metrics: Dict[str, Any] = {
+            "stream_symbols": sorted(state.mark_prices.keys()),
+            "stream_quotes": 0,
+            "rest_fallbacks": 0,
+            "stale_symbols": [],
+        }
+        stale_threshold_seconds = float(getattr(self._settings, "analytics_quote_stale_seconds", 45.0))
 
         open_symbols = {
             position.symbol
@@ -1788,6 +2109,14 @@ class TradingEngine:
         if open_symbols:
             stream = await self._ensure_price_stream()
             await stream.set_symbols(open_symbols)
+            quote_metrics["stream_symbols"] = sorted(open_symbols)
+            logger.debug(
+                "Subscribed stream quotes",
+                extra={
+                    "event": "stream_subscription_update",
+                    "symbols": sorted(open_symbols),
+                },
+            )
         else:
             await self._stop_price_stream()
 
@@ -1816,7 +2145,10 @@ class TradingEngine:
             total_notional += entry_notional
 
             quote = stream.get_quote(position.symbol) if stream else None
+            quote_sources: list[str] = []
             if quote:
+                quote_sources.append("stream")
+                quote_metrics["stream_quotes"] += 1
                 if quote.get("mark_price") is not None:
                     mark_price = self._to_float(quote["mark_price"], mark_price or position.entry_price)
                 if quote.get("last_price") is not None:
@@ -1844,8 +2176,10 @@ class TradingEngine:
             if mark_price is None and position.exit_time is None and client:
                 try:
                     ticker = await client.get_ticker(position.symbol)
+                    rest_fallback_used = True
                 except Exception:  # noqa: BLE001
                     logger.exception("Unable to refresh mark price for %s", position.symbol)
+                    rest_fallback_used = False
                 else:
                     result = ticker.get("result") or ticker.get("data") or {}
                     mark_price = self._to_float(result.get("mark_price"), mark_price or position.entry_price)
@@ -1863,11 +2197,36 @@ class TradingEngine:
                         ticker_timestamp = normalized_ts if normalized_ts is not None else result.get("timestamp")
                     if mark_price is not None:
                         state.mark_prices[position.symbol] = mark_price
+                if rest_fallback_used:
+                    quote_sources.append("rest")
+                    quote_metrics["rest_fallbacks"] += 1
+                    logger.warning(
+                        "REST fallback used for %s",
+                        position.symbol,
+                        extra={
+                            "event": "mark_price_rest_fallback",
+                            "symbol": position.symbol,
+                        },
+                    )
 
             if ticker_timestamp is not None:
                 normalized_ts = OptionPriceStream._normalize_timestamp(ticker_timestamp)
                 if normalized_ts is not None:
                     ticker_timestamp = normalized_ts
+                quote_age_seconds = None
+                try:
+                    ts_dt = datetime.fromisoformat(str(ticker_timestamp).replace("Z", "+00:00"))
+                except ValueError:
+                    quote_age_seconds = None
+                else:
+                    quote_age_seconds = max((now - ts_dt).total_seconds(), 0.0)
+                    if quote_age_seconds > stale_threshold_seconds:
+                        quote_metrics["stale_symbols"].append({
+                            "symbol": position.symbol,
+                            "age_seconds": quote_age_seconds,
+                        })
+            else:
+                quote_age_seconds = None
 
             if mark_price is None:
                 mark_price = position.exit_price or position.entry_price
@@ -1925,6 +2284,8 @@ class TradingEngine:
                 "trailing": position.trailing_sl_state or {},
                 "ticker_timestamp": ticker_timestamp,
                 "mark_timestamp": ticker_timestamp or analytics_snapshot.get("updated_at"),
+                "quote_sources": quote_sources,
+                "quote_age_seconds": quote_age_seconds,
             }
             positions_payload.append(self._json_ready(leg_payload))
 
@@ -1937,6 +2298,14 @@ class TradingEngine:
             "notional": total_notional,
             "total_pnl_pct": total_pct,
         }
+        logger.debug(
+            "Quote analytics summary",
+            extra={
+                "event": "position_quote_metrics",
+                **quote_metrics,
+                "stale_threshold_seconds": stale_threshold_seconds,
+            },
+        )
         return positions_payload, totals
 
     def _calculate_unrealized(self, position: PositionLedger, mark_price: float, contract_size: float) -> float:
@@ -2085,6 +2454,17 @@ class TradingEngine:
         metadata["summary"] = self._json_ready(summary)
         metadata["legs_summary"] = summary["legs"]
         state.session.session_metadata = metadata
+
+        logger.debug(
+            "Session summary finalized",
+            extra={
+                "event": "session_summary_finalized",
+                "exit_reason": reason,
+                "leg_count": len(summary.get("legs", [])),
+                "totals": summary.get("totals"),
+                "trailing": summary.get("trailing"),
+            },
+        )
 
         return summary
 
@@ -2304,14 +2684,29 @@ class TradingEngine:
         state = self._state
         if state is None:
             return
+        previous_max_profit = state.max_profit_seen
+        previous_max_profit_pct = state.max_profit_seen_pct
+        previous_level = state.trailing_level
         state.max_profit_seen = max(state.max_profit_seen, latest_pnl)
         latest_pct = self._percent_from_amount(latest_pnl, notional)
         state.max_profit_seen_pct = max(state.max_profit_seen_pct, latest_pct)
         config = state.config
         if not bool(getattr(config, "trailing_sl_enabled", False)):
+            if previous_max_profit != state.max_profit_seen or previous_max_profit_pct != state.max_profit_seen_pct:
+                logger.debug(
+                    "Trailing metrics updated without SL",
+                    extra={
+                        "event": "trailing_state_metrics",
+                        "latest_abs": latest_pnl,
+                        "latest_pct": latest_pct,
+                        "max_profit_seen": state.max_profit_seen,
+                        "max_profit_seen_pct": state.max_profit_seen_pct,
+                    },
+                )
             return
         rules = getattr(config, "trailing_rules", {}) or {}
         applicable_level = 0.0
+        rules_applied: list[dict[str, float]] = []
         for trigger_str, sl_str in rules.items():
             try:
                 trigger = float(trigger_str)
@@ -2322,7 +2717,21 @@ class TradingEngine:
             sl_pct = self._normalize_percent(sl)
             if state.max_profit_seen_pct >= trigger_pct:
                 applicable_level = max(applicable_level, sl_pct)
+                rules_applied.append({"trigger_pct": trigger_pct, "stop_level_pct": sl_pct})
         state.trailing_level = applicable_level
+        logger.debug(
+            "Trailing stop state evaluated",
+            extra={
+                "event": "trailing_state_updated",
+                "latest_abs": latest_pnl,
+                "latest_pct": latest_pct,
+                "previous_level_pct": previous_level,
+                "new_level_pct": state.trailing_level,
+                "max_profit_seen": state.max_profit_seen,
+                "max_profit_seen_pct": state.max_profit_seen_pct,
+                "rules_applied": rules_applied,
+            },
+        )
 
     @staticmethod
     def _parse_trade_time(value: str | None) -> time_obj:

@@ -7,15 +7,24 @@ import "antd/dist/reset.css";
 import "./styles.css";
 
 import Dashboard from "./pages/Dashboard";
+import ErrorBoundary from "./components/ErrorBoundary";
+import logger from "./utils/logger";
 
 const queryClient = new QueryClient();
+
+logger.info("Frontend bootstrap", {
+  event: "app_bootstrap",
+  environment: import.meta.env.MODE
+});
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ConfigProvider theme={{ token: { colorPrimary: "#0e7490" } }}>
       <QueryClientProvider client={queryClient}>
         <AntApp>
-          <Dashboard />
+          <ErrorBoundary>
+            <Dashboard />
+          </ErrorBoundary>
         </AntApp>
       </QueryClientProvider>
     </ConfigProvider>

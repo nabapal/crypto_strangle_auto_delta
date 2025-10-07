@@ -4,11 +4,15 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional, Set
 
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+from ..core.config import get_settings
+from .logging_utils import LogSampler, monitor_task
 
 WebSocketClientProtocol = Any
 
@@ -28,6 +32,10 @@ class OptionPriceStream:
         self._subscriptions: Set[str] = set()
         self._latest_quotes: Dict[str, Dict[str, Any]] = {}
         self._backoff_seconds = 1.0
+        self._last_quote_at: float | None = None
+        self._last_heartbeat_logged: float = 0.0
+        settings = get_settings()
+        self._quote_sampler = LogSampler(getattr(settings, "tick_log_sample_rate", 50))
 
     async def start(self) -> None:
         """Ensure the background websocket listener is running."""
@@ -36,6 +44,18 @@ class OptionPriceStream:
                 return
             self._stop_event.clear()
             self._task = asyncio.create_task(self._run(), name="delta-option-price-stream")
+            monitor_task(
+                self._task,
+                logger,
+                context={"event": "websocket_background_failure", "url": self._url},
+            )
+            logger.debug(
+                "Option price stream starting",
+                extra={
+                    "event": "websocket_start",
+                    "url": self._url,
+                },
+            )
 
     async def stop(self) -> None:
         """Stop the websocket listener and clean up resources."""
@@ -56,6 +76,10 @@ class OptionPriceStream:
                                 await maybe_coro
                     except Exception:  # noqa: BLE001
                         logger.exception("Failed closing websocket connection")
+            logger.info(
+                "Option price stream stopping",
+                extra={"event": "websocket_stop"},
+            )
             task = self._task
             self._task = None
             self._conn = None
@@ -99,7 +123,14 @@ class OptionPriceStream:
         backoff = self._backoff_seconds
         while not self._stop_event.is_set():
             try:
-                logger.info("Connecting to Delta ticker websocket at %s", self._url)
+                logger.info(
+                    "Connecting to Delta ticker websocket",
+                    extra={
+                        "event": "websocket_connect",
+                        "url": self._url,
+                        "subscriptions": len(self._subscriptions),
+                    },
+                )
                 async with websockets.connect(self._url, ping_interval=20, ping_timeout=20) as ws:
                     await self._on_open(ws)
                     backoff = self._backoff_seconds
@@ -114,10 +145,16 @@ class OptionPriceStream:
                             try:
                                 message = receive_task.result()
                             except ConnectionClosed:
-                                logger.info("Websocket connection closed by server")
+                                logger.info(
+                                    "Websocket connection closed by server",
+                                    extra={"event": "websocket_closed_by_server"},
+                                )
                                 break
                             except Exception:  # noqa: BLE001
-                                logger.exception("Error receiving websocket message")
+                                logger.exception(
+                                    "Error receiving websocket message",
+                                    extra={"event": "websocket_receive_error"},
+                                )
                                 break
                             else:
                                 await self._handle_message(message)
@@ -129,16 +166,27 @@ class OptionPriceStream:
                             with contextlib.suppress(asyncio.CancelledError):
                                 await task
             except asyncio.CancelledError:
-                logger.info("Option price stream task cancelled")
+                logger.info(
+                    "Option price stream task cancelled",
+                    extra={"event": "websocket_cancelled"},
+                )
                 break
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Ticker websocket error: %s", exc, exc_info=True)
+                logger.warning(
+                    "Ticker websocket error: %s",
+                    exc,
+                    exc_info=True,
+                    extra={
+                        "event": "websocket_error",
+                        "backoff_seconds": backoff,
+                    },
+                )
                 await asyncio.sleep(min(backoff, 30.0))
                 backoff = min(backoff * 2, 30.0)
             finally:
                 async with self._lock:
                     self._conn = None
-        logger.info("Option price stream stopped")
+        logger.info("Option price stream stopped", extra={"event": "websocket_stopped"})
 
     async def _on_open(self, ws: WebSocketClientProtocol) -> None:
         async with self._lock:
@@ -163,16 +211,32 @@ class OptionPriceStream:
         }
         try:
             await ws.send(json.dumps(payload))
-            logger.info("Subscribed to %d ticker symbols", len(symbols))
+            logger.info(
+                "Subscribed to ticker symbols",
+                extra={
+                    "event": "websocket_subscribe",
+                    "count": len(symbols),
+                    "symbols": symbols,
+                },
+            )
         except Exception:  # noqa: BLE001
-            logger.exception("Failed sending subscribe payload")
+            logger.exception(
+                "Failed sending subscribe payload",
+                extra={"event": "websocket_subscribe_failed"},
+            )
 
     async def _handle_message(self, message: str | bytes) -> None:
         text = message.decode("utf-8") if isinstance(message, (bytes, bytearray)) else message
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
-            logger.debug("Dropping non-JSON websocket payload: %s", text)
+            logger.warning(
+                "Dropping non-JSON websocket payload",
+                extra={
+                    "event": "websocket_decode_error",
+                    "payload_sample": text[:200],
+                },
+            )
             return
 
         if not isinstance(payload, dict):
@@ -205,7 +269,13 @@ class OptionPriceStream:
             return
 
         if payload.get("type") in {"error", "warning"}:
-            logger.warning("Ticker stream message: %s", payload)
+            logger.warning(
+                "Ticker stream warning",
+                extra={
+                    "event": "websocket_message_warning",
+                    "payload": payload,
+                },
+            )
 
     def _store_quote(self, data: Dict[str, Any]) -> None:
         symbol = self._normalize_symbol(data.get("symbol") or data.get("product_symbol") or data.get("market"))
@@ -238,6 +308,31 @@ class OptionPriceStream:
             "raw": data,
         }
         self._latest_quotes[symbol] = quote
+        now = time.time()
+        self._last_quote_at = now
+        if now - self._last_heartbeat_logged >= 30:
+            self._last_heartbeat_logged = now
+            logger.debug(
+                "Received quote heartbeat",
+                extra={
+                    "event": "websocket_quote_heartbeat",
+                    "symbol": symbol,
+                    "subscription_count": len(self._subscriptions),
+                    "cache_size": len(self._latest_quotes),
+                },
+            )
+        if self._quote_sampler.should_log(symbol):
+            logger.debug(
+                "Sampled quote update",
+                extra={
+                    "event": "websocket_quote_sample",
+                    "symbol": symbol,
+                    "best_bid": quote["best_bid"],
+                    "best_ask": quote["best_ask"],
+                    "mark_price": quote["mark_price"],
+                    "subscriptions": len(self._subscriptions),
+                },
+            )
 
     @staticmethod
     def _normalize_timestamp(value: Any) -> str | None:

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Any
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import StrategySession
+from ..models import OrderLedger, PositionLedger, StrategySession
 from ..schemas.trading import (
     StrategyRuntimeResponse,
     StrategySessionDetail,
@@ -97,6 +98,23 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
     result = await session.get(StrategySession, session_id)
     if not result:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    orders = (
+        await session.execute(
+            select(OrderLedger)
+            .where(OrderLedger.session_id == session_id)
+            .order_by(OrderLedger.created_at)
+        )
+    ).scalars().all()
+
+    positions = (
+        await session.execute(
+            select(PositionLedger)
+            .where(PositionLedger.session_id == session_id)
+            .order_by(PositionLedger.entry_time, PositionLedger.id)
+        )
+    ).scalars().all()
+
     metadata = result.session_metadata or {}
     runtime_meta = metadata.get("runtime") or {}
     monitor_meta = runtime_meta.get("monitor") or {}
@@ -109,7 +127,7 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
         activated_at=result.activated_at,
         deactivated_at=result.deactivated_at,
         pnl_summary=result.pnl_summary,
-    session_metadata=result.session_metadata,
+        session_metadata=result.session_metadata,
         exit_reason=_extract_exit_reason(result),
         legs_summary=legs_summary,
         summary=summary_meta,
@@ -127,7 +145,7 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
                 "created_at": order.created_at,
                 "raw_response": order.raw_response,
             }
-            for order in result.orders
+            for order in orders
         ],
         positions=[
             {
@@ -143,6 +161,6 @@ async def get_session_detail(session_id: int, session: AsyncSession = Depends(ge
                 "trailing_sl_state": pos.trailing_sl_state,
                 "analytics": pos.analytics,
             }
-            for pos in result.positions
+            for pos in positions
         ],
     )

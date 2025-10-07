@@ -1,9 +1,11 @@
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, Col, Divider, Empty, Row, Space, Tag, Typography } from "antd";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { AnalyticsKpi, fetchAnalytics } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
+import logger from "../utils/logger";
 
 const { Title, Text } = Typography;
 
@@ -66,12 +68,46 @@ const formatTimestamp = (value?: string) => {
 };
 
 export default function AnalyticsDashboard() {
-  const { data, isLoading } = useQuery({
+  const analyticsQuery = useQuery({
     queryKey: ["analytics"],
     queryFn: fetchAnalytics,
     refetchInterval: 5000,
     ...sharedQueryOptions
   });
+
+  const data = analyticsQuery.data;
+  const isLoading = analyticsQuery.isLoading;
+
+  const successRef = useRef<number>(0);
+  const errorRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (analyticsQuery.data && analyticsQuery.dataUpdatedAt) {
+      if (successRef.current !== analyticsQuery.dataUpdatedAt) {
+        successRef.current = analyticsQuery.dataUpdatedAt;
+        logger.info("Analytics snapshot refreshed", {
+          event: "ui_analytics_refreshed",
+          kpi_count: analyticsQuery.data.kpis?.length ?? 0,
+          chart_points: analyticsQuery.data.chart_data?.pnl?.length ?? 0
+        });
+      }
+    }
+  }, [analyticsQuery.data, analyticsQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (analyticsQuery.isError && analyticsQuery.error) {
+      const messageText = analyticsQuery.error instanceof Error ? analyticsQuery.error.message : String(analyticsQuery.error);
+      if (errorRef.current !== messageText) {
+        errorRef.current = messageText;
+        logger.error("Analytics snapshot failed", {
+          event: "ui_analytics_refresh_failed",
+          message: messageText
+        });
+      }
+    } else if (!analyticsQuery.isError) {
+      errorRef.current = null;
+    }
+  }, [analyticsQuery.isError, analyticsQuery.error]);
 
   const kpis = data?.kpis ?? [];
   const netKpi = kpis.find((kpi) => kpi.label.toLowerCase().includes("net"));

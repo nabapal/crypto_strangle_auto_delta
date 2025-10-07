@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo } from "react";
 
 import { Layout, Spin, Tabs, Typography } from "antd";
 
@@ -6,11 +6,18 @@ const ConfigPanel = lazy(() => import("../components/ConfigPanel"));
 const TradingControlPanel = lazy(() => import("../components/TradingControlPanel"));
 const TradeHistoryTable = lazy(() => import("../components/TradeHistoryTable"));
 const AnalyticsDashboard = lazy(() => import("../components/AnalyticsDashboard"));
+import logger from "../utils/logger";
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
 
 export default function Dashboard() {
+  useEffect(() => {
+    logger.info("Dashboard rendered", {
+      event: "ui_dashboard_loaded"
+    });
+  }, []);
+
   const tabItems = useMemo(
     () => [
       {
@@ -53,6 +60,13 @@ export default function Dashboard() {
     []
   );
 
+  const handleTabChange = useCallback((key: string) => {
+    logger.info("Dashboard tab changed", {
+      event: "ui_dashboard_tab_selected",
+      tab: key
+    });
+  }, []);
+
   return (
     <Layout style={{ minHeight: "100vh" }}>
       <Header style={{ background: "#0f172a", display: "flex", alignItems: "center", padding: "0 32px" }}>
@@ -61,7 +75,7 @@ export default function Dashboard() {
         </Title>
       </Header>
       <Content style={{ padding: "32px", background: "#f5f7fb" }}>
-        <Tabs type="card" defaultActiveKey="config" items={tabItems} destroyInactiveTabPane />
+        <Tabs type="card" defaultActiveKey="config" items={tabItems} destroyInactiveTabPane onChange={handleTabChange} />
       </Content>
     </Layout>
   );

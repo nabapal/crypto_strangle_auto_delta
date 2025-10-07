@@ -4,7 +4,7 @@ module.exports = {
     browser: true,
     es2021: true
   },
-  extends: ["eslint:recommended", "plugin:react/recommended", "plugin:react-hooks/recommended", "prettier"],
+  parser: "@typescript-eslint/parser",
   parserOptions: {
     ecmaVersion: "latest",
     sourceType: "module",
@@ -17,7 +17,14 @@ module.exports = {
       version: "detect"
     }
   },
-  plugins: ["react", "react-hooks"],
+  plugins: ["@typescript-eslint", "react", "react-hooks"],
+  extends: [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended",
+    "prettier"
+  ],
   rules: {
     "react/react-in-jsx-scope": "off",
     "react/prop-types": "off"

@@ -68,7 +68,17 @@ class DeltaExchangeClient:
     ) -> Dict[str, Any]:
         headers = {"Content-Type": "application/json"}
         if auth:
-            headers.update(await self._sign(method, path, params, body))
+            if self.has_credentials:
+                headers.update(await self._sign(method, path, params, body))
+            else:
+                logger.warning(
+                    "Authenticated Delta request without credentials",
+                    extra={
+                        "event": "delta_auth_missing",
+                        "delta_method": method.upper(),
+                        "delta_path": path,
+                    },
+                )
 
         call_id = uuid.uuid4().hex
         log_extra = {
@@ -76,6 +86,7 @@ class DeltaExchangeClient:
             "delta_method": method.upper(),
             "delta_path": path,
             "delta_auth": auth,
+            "delta_auth_status": "signed" if auth and self.has_credentials else ("missing" if auth else "none"),
         }
 
         if params:
@@ -97,10 +108,15 @@ class DeltaExchangeClient:
             error_extra = {
                 **log_extra,
                 "delta_latency_ms": round(latency_ms, 2),
+                "delta_latency_bucket": self._latency_bucket(latency_ms),
                 "delta_status": response.status_code if response is not None else None,
                 "delta_error": exc.__class__.__name__,
             }
             if response is not None:
+                error_extra.update(self._rate_limit_headers(response))
+                content_bytes = response.content or b""
+                if content_bytes:
+                    error_extra["delta_response_bytes"] = len(content_bytes)
                 try:
                     parsed_body = response.json()
                 except ValueError:
@@ -126,6 +142,7 @@ class DeltaExchangeClient:
             error_extra = {
                 **log_extra,
                 "delta_latency_ms": round(latency_ms, 2),
+                "delta_latency_bucket": self._latency_bucket(latency_ms),
                 "delta_error": exc.__class__.__name__,
             }
             logger.exception("Delta request error", extra=error_extra)
@@ -135,8 +152,11 @@ class DeltaExchangeClient:
         success_extra = {
             **log_extra,
             "delta_latency_ms": round(latency_ms, 2),
+            "delta_latency_bucket": self._latency_bucket(latency_ms),
             "delta_status": response.status_code,
+            "delta_response_bytes": len(response.content or b""),
         }
+        success_extra.update(self._rate_limit_headers(response))
         if self._debug_verbose:
             success_extra["delta_response_body"] = self._truncated_payload(data)
         logger.info("Delta request success", extra=success_extra)
@@ -200,3 +220,21 @@ class DeltaExchangeClient:
         if isinstance(payload, list):
             return [self._mask_sensitive(item) for item in payload]
         return payload
+
+    @staticmethod
+    def _latency_bucket(latency_ms: float) -> str:
+        if latency_ms < 100:
+            return "fast"
+        if latency_ms < 300:
+            return "moderate"
+        if latency_ms < 1000:
+            return "slow"
+        return "degraded"
+
+    @staticmethod
+    def _rate_limit_headers(response: httpx.Response) -> Dict[str, Any]:
+        headers = response.headers
+        return {
+            "delta_rate_limit_remaining": headers.get("x-ratelimit-remaining"),
+            "delta_rate_limit_reset": headers.get("x-ratelimit-reset"),
+        }

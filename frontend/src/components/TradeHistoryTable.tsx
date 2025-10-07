@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button,
@@ -19,6 +19,7 @@ import {
   fetchTradingSessions
 } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
+import logger from "../utils/logger";
 
 const { Title, Text } = Typography;
 
@@ -78,11 +79,14 @@ const getSummaryValue = (summary: Record<string, unknown> | undefined, keys: str
 export default function TradeHistoryTable() {
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
 
-  const { data, isLoading } = useQuery<TradingSessionSummary[]>({
+  const sessionsQuery = useQuery<TradingSessionSummary[]>({
     queryKey: ["sessions"],
     queryFn: fetchTradingSessions,
     ...sharedQueryOptions
   });
+
+  const data = sessionsQuery.data;
+  const isLoading = sessionsQuery.isLoading;
 
   const detailQuery = useQuery<TradingSessionDetail>({
     queryKey: ["session-detail", selectedSessionId],
@@ -91,7 +95,76 @@ export default function TradeHistoryTable() {
     ...sharedQueryOptions
   });
 
-  const closeDrawer = () => setSelectedSessionId(null);
+  const sessionsSuccessRef = useRef<number>(0);
+  const sessionsErrorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (sessionsQuery.data && sessionsQuery.dataUpdatedAt) {
+      if (sessionsSuccessRef.current !== sessionsQuery.dataUpdatedAt) {
+        sessionsSuccessRef.current = sessionsQuery.dataUpdatedAt;
+        logger.info("Historical sessions loaded", {
+          event: "ui_sessions_table_loaded",
+          count: sessionsQuery.data.length
+        });
+      }
+    }
+  }, [sessionsQuery.data, sessionsQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (sessionsQuery.isError && sessionsQuery.error) {
+      const messageText = sessionsQuery.error instanceof Error ? sessionsQuery.error.message : String(sessionsQuery.error);
+      if (sessionsErrorRef.current !== messageText) {
+        sessionsErrorRef.current = messageText;
+        logger.error("Failed to load historical sessions", {
+          event: "ui_sessions_table_failed",
+          message: messageText
+        });
+      }
+    } else if (!sessionsQuery.isError) {
+      sessionsErrorRef.current = null;
+    }
+  }, [sessionsQuery.isError, sessionsQuery.error]);
+
+  const detailSuccessRef = useRef<number>(0);
+  const detailErrorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (detailQuery.data && detailQuery.dataUpdatedAt) {
+      if (detailSuccessRef.current !== detailQuery.dataUpdatedAt) {
+        detailSuccessRef.current = detailQuery.dataUpdatedAt;
+        logger.debug("Session detail loaded", {
+          event: "ui_session_detail_loaded",
+          session_id: detailQuery.data.id,
+          legs: detailQuery.data.legs_summary?.length ?? 0,
+          orders: detailQuery.data.orders?.length ?? 0
+        });
+      }
+    }
+  }, [detailQuery.data, detailQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (detailQuery.isError && detailQuery.error) {
+      const messageText = detailQuery.error instanceof Error ? detailQuery.error.message : String(detailQuery.error);
+      if (detailErrorRef.current !== messageText) {
+        detailErrorRef.current = messageText;
+        logger.error("Failed to load session detail", {
+          event: "ui_session_detail_failed",
+          session_id: selectedSessionId,
+          message: messageText
+        });
+      }
+    } else if (!detailQuery.isError) {
+      detailErrorRef.current = null;
+    }
+  }, [detailQuery.isError, detailQuery.error, selectedSessionId]);
+
+  const closeDrawer = () => {
+    if (selectedSessionId !== null) {
+      logger.info("Session detail drawer closed", {
+        event: "ui_session_detail_closed",
+        session_id: selectedSessionId
+      });
+    }
+    setSelectedSessionId(null);
+  };
 
   const renderCurrency = (value: unknown) => {
     const numeric = toNumber(value);
@@ -173,7 +246,16 @@ export default function TradeHistoryTable() {
       title: "Actions",
       dataIndex: "actions",
       render: (_: unknown, record: TradingSessionSummary) => (
-        <Button type="link" onClick={() => setSelectedSessionId(record.id)}>
+        <Button
+          type="link"
+          onClick={() => {
+            logger.info("Session detail opened", {
+              event: "ui_session_detail_opened",
+              session_id: record.id
+            });
+            setSelectedSessionId(record.id);
+          }}
+        >
           View Details
         </Button>
       )
