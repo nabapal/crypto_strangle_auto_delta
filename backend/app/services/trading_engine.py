@@ -14,6 +14,7 @@ from datetime import date, datetime, time as time_obj, timezone, timedelta
 from typing import Any, Dict, List, Optional, cast
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..core.config import get_settings
@@ -495,6 +496,7 @@ class TradingEngine:
         try:
             async with self._session_factory() as db_session:
                 merged_session = await db_session.merge(state.session)
+                await self._ensure_session_relationships(merged_session, ("positions", "orders"))
                 await db_session.commit()
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -509,6 +511,40 @@ class TradingEngine:
 
         if merged_session is not None:
             state.session = merged_session
+
+    async def _ensure_session_relationships(
+        self,
+        session: StrategySession,
+        relationships: tuple[str, ...] = ("positions",),
+    ) -> None:
+        awaitables = getattr(session, "awaitable_attrs", None)
+        if awaitables is None:
+            return
+
+        for rel_name in relationships:
+            loader = getattr(awaitables, rel_name, None)
+            if loader is None:
+                continue
+            try:
+                await loader
+            except InvalidRequestError:
+                logger.debug(
+                    "Unable to eagerly load session relationship",
+                    extra={
+                        "event": "session_relationship_load_failed",
+                        "relationship": rel_name,
+                        "session_id": getattr(session, "id", None),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Unexpected error while loading session relationship",
+                    extra={
+                        "event": "session_relationship_load_error",
+                        "relationship": rel_name,
+                        "session_id": getattr(session, "id", None),
+                    },
+                )
 
     async def _run_loop(self) -> None:
         assert self._state is not None
@@ -935,6 +971,7 @@ class TradingEngine:
     async def _force_exit(self) -> None:
         state = self._state
         assert state is not None
+        await self._ensure_session_relationships(state.session, ("positions",))
         logger.info(
             "Force exit initiated",
             extra={
@@ -1424,7 +1461,11 @@ class TradingEngine:
                     contract.symbol,
                     extra={"strategy_id": self._state.strategy_id if self._state else None},
                 )
-            client_order_id = f"{self._state.strategy_id}-{self._option_kind(contract.contract_type)}-{uuid.uuid4().hex[:6]}-limit{attempt}"
+            client_order_id = self._build_client_order_id(
+                contract.contract_type,
+                "limit",
+                attempt=attempt,
+            )
             payload: Dict[str, Any] = {
                 "product_id": contract.product_id,
                 "size": remaining,
@@ -1556,7 +1597,7 @@ class TradingEngine:
                 "remaining": remaining,
             },
         )
-        market_order_id = f"{self._state.strategy_id}-{self._option_kind(contract.contract_type)}-{uuid.uuid4().hex[:6]}-market"
+        market_order_id = self._build_client_order_id(contract.contract_type, "market")
         market_payload: Dict[str, Any] = {
             "product_id": contract.product_id,
             "size": remaining,
@@ -1663,10 +1704,15 @@ class TradingEngine:
             )
             return
 
+        await self._ensure_session_relationships(state.session, ("positions",))
+
+        positions_collection = getattr(state.session, "positions", None)
+        if positions_collection is None:
+            positions_collection = []
+            state.session.positions = positions_collection
+        iterable_positions = list(positions_collection)
         contract_cache: Dict[str, OptionContract | None] = {}
-        existing_by_symbol = {
-            pos.symbol: pos for pos in state.session.positions if pos.exit_time is None
-        }
+        existing_by_symbol = {pos.symbol: pos for pos in iterable_positions if pos.exit_time is None}
         synced = 0
 
         for raw_position in positions:
@@ -1726,11 +1772,12 @@ class TradingEngine:
                 entry_time=datetime.now(UTC),
                 trailing_sl_state={"level": 0.0},
             )
-            state.session.positions.append(position_record)
+            positions_collection.append(position_record)
+            iterable_positions.append(position_record)
             existing_by_symbol[symbol] = position_record
             synced += 1
 
-        live_positions = [pos.symbol for pos in state.session.positions if pos.exit_time is None]
+        live_positions = [pos.symbol for pos in iterable_positions if pos.exit_time is None]
         if live_positions:
             state.session.status = "running"
             if state.session.activated_at is None:
@@ -1918,6 +1965,71 @@ class TradingEngine:
             )
 
         await self._persist_session_state("record_live_orders")
+
+    def _build_client_order_id(
+        self,
+        contract_type: str,
+        order_kind: str,
+        attempt: int | None = None,
+    ) -> str:
+        max_length = 32
+        suffix = f"{order_kind}{attempt}" if attempt is not None else order_kind
+        option_code = self._option_kind(contract_type)
+        random_segment = uuid.uuid4().hex[:6]
+
+        base_without_strategy = len(option_code) + len(random_segment) + len(suffix) + 2
+        if base_without_strategy > max_length:
+            allowed_random = max(2, max_length - (len(option_code) + len(suffix) + 2))
+            random_segment = random_segment[:allowed_random]
+            base_without_strategy = len(option_code) + len(random_segment) + len(suffix) + 2
+            if base_without_strategy > max_length:
+                allowed_suffix = max(3, max_length - (len(option_code) + len(random_segment) + 2))
+                suffix = suffix[:allowed_suffix]
+
+        raw_strategy_id = None
+        if self._state and self._state.strategy_id:
+            raw_strategy_id = self._state.strategy_id
+
+        strategy_token = "strategy"
+        if raw_strategy_id:
+            cleaned = "".join(ch for ch in raw_strategy_id if ch.isalnum() or ch in ("-", "_"))
+            if not cleaned:
+                cleaned = raw_strategy_id.replace(" ", "")
+            strategy_token = cleaned or "strategy"
+
+        max_strategy_len = max_length - (len(option_code) + len(random_segment) + len(suffix) + 3)
+        truncated = False
+        if max_strategy_len <= 0:
+            strategy_part = ""
+            if raw_strategy_id:
+                truncated = True
+        else:
+            strategy_part = strategy_token[:max_strategy_len]
+            truncated = len(strategy_part) < len(strategy_token)
+
+        parts = [part for part in (strategy_part, option_code, random_segment, suffix) if part]
+        client_order_id = "-".join(parts)
+
+        if len(client_order_id) > max_length:
+            overflow = len(client_order_id) - max_length
+            if len(random_segment) > overflow:
+                random_segment = random_segment[: len(random_segment) - overflow]
+            else:
+                suffix = suffix[: max(3, len(suffix) - overflow)]
+            parts = [part for part in (strategy_part, option_code, random_segment, suffix) if part]
+            client_order_id = "-".join(parts)[:max_length]
+
+        if truncated:
+            logger.debug(
+                "Truncated strategy_id for client_order_id",
+                extra={
+                    "event": "delta_client_order_id_truncated",
+                    "original_strategy_id": raw_strategy_id,
+                    "client_order_id": client_order_id,
+                },
+            )
+
+        return client_order_id
 
     @staticmethod
     def _option_kind(contract_type: str) -> str:

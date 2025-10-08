@@ -23,8 +23,16 @@ class StrategySession(Base):
     pnl_summary: Mapped[dict | None] = mapped_column(JSON)
     session_metadata: Mapped[dict | None] = mapped_column(JSON)
 
-    orders: Mapped[list[OrderLedger]] = relationship(back_populates="session", cascade="all, delete-orphan")
-    positions: Mapped[list[PositionLedger]] = relationship(back_populates="session", cascade="all, delete-orphan")
+    orders: Mapped[list[OrderLedger]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    positions: Mapped[list[PositionLedger]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
 
 class OrderLedger(Base):

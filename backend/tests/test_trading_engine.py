@@ -792,6 +792,46 @@ async def test_record_session_snapshot_persists_metrics(db_session):
     assert snapshot.chart_data["pnl"][0]["timestamp"] == pytest.approx(expected_ts)
 
 
+def test_client_order_id_truncates_strategy_prefix():
+    long_strategy_id = "delta-strangle-20251008124046"
+    config = TradingConfiguration(name="Length Check Config", quantity=1)
+    session = StrategySession(
+        strategy_id=long_strategy_id,
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+    )
+    engine = TradingEngine()
+    engine._state = StrategyRuntimeState(strategy_id=long_strategy_id, config=config, session=session)
+
+    builder = getattr(engine, "_build_client_order_id")
+    client_order_id = builder("call", "limit", attempt=4)
+
+    assert len(client_order_id) <= 32
+    assert client_order_id.endswith("limit4")
+    assert "CE" in client_order_id
+
+
+def test_client_order_id_handles_extreme_strategy_length():
+    long_strategy_id = "A" * 128
+    config = TradingConfiguration(name="Extreme Length Config", quantity=1)
+    session = StrategySession(
+        strategy_id=long_strategy_id,
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+    )
+    engine = TradingEngine()
+    engine._state = StrategyRuntimeState(strategy_id=long_strategy_id, config=config, session=session)
+
+    builder = getattr(engine, "_build_client_order_id")
+    client_order_id = builder("put", "market")
+
+    assert len(client_order_id) <= 32
+    assert client_order_id.endswith("market")
+    assert "PE" in client_order_id
+
+
 @pytest.mark.asyncio
 async def test_latest_snapshot_normalizes_chart_data(db_session):
     captured_at = datetime.now(timezone.utc)
