@@ -62,4 +62,5 @@ async def test_protected_endpoint_requires_auth(monkeypatch):
         response = await client.get("/api/trading/runtime")
 
     assert response.status_code == 401
-    assert "credentials" in response.text.lower()
+    error_text = response.text.lower()
+    assert any(keyword in error_text for keyword in ("credentials", "not authenticated"))

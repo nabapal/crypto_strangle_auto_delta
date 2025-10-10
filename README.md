@@ -50,7 +50,7 @@ pip install -e .[dev]
 uvicorn app.main:app --port 8001 --reload
 ```
 
-Environment variables are read from `backend/.env`. Use the consolidated `.env.example` in the repository root, copy the `# Backend` section into `backend/.env`, and fill in any secrets before launching.
+Environment variables are read from `backend/.env`. Use the consolidated `.env.example` in the repository root, copy the `# Backend` section into `backend/.env`, and fill in any secrets before launching. Key toggles include log sampling (`ENGINE_DEBUG_SAMPLE_RATE`, `TICK_LOG_SAMPLE_RATE`), structured log ingestion controls (`BACKEND_LOG_INGEST_ENABLED`, `BACKEND_LOG_PATH`, `BACKEND_LOG_POLL_INTERVAL`, `BACKEND_LOG_BATCH_SIZE`, `BACKEND_LOG_RETENTION_DAYS`, `LOG_INGEST_MAX_BATCH`), and optional protection for the log batch endpoint via `LOG_INGEST_API_KEY`.
 
 ### Frontend
 
@@ -60,7 +60,7 @@ pnpm install
 pnpm dev
 ```
 
-Create `frontend/.env` by copying the `# Frontend` section from the root `.env.example`. Adjust `VITE_API_BASE_URL` so it points at the FastAPI host (include the `/api` suffix). When serving the UI from a different origin, update this value to target the production backend.
+Create `frontend/.env` by copying the `# Frontend` section from the root `.env.example`. Adjust `VITE_API_BASE_URL` so it points at the FastAPI host (include the `/api` suffix). When serving the UI from a different origin, update this value to target the production backend. Remote telemetry is opt-in by default (`VITE_ENABLE_REMOTE_LOGS=false`); flip it to `true` only when you want the dashboard to post browser logs to the backend.
 
 ## Production Deployment
 
@@ -78,7 +78,8 @@ Key variables:
 
 - `DATABASE_URL=sqlite+aiosqlite:////app/data/delta_trader.db`
 - `BACKEND_LOG_INGEST_ENABLED=true` and `BACKEND_LOG_PATH=/app/logs/backend.log`
-- `BACKEND_LOG_POLL_INTERVAL`, `BACKEND_LOG_BATCH_SIZE`, `BACKEND_LOG_RETENTION_DAYS` (defaults provided)
+- `BACKEND_LOG_POLL_INTERVAL`, `BACKEND_LOG_BATCH_SIZE`, `BACKEND_LOG_RETENTION_DAYS`, `LOG_INGEST_MAX_BATCH`
+- `ENGINE_DEBUG_SAMPLE_RATE`, `TICK_LOG_SAMPLE_RATE` for controlling engine telemetry verbosity
 - `DELTA_API_KEY` / `DELTA_API_SECRET`
 - `ALLOWED_ORIGINS` and `VITE_API_BASE_URL=https://your-domain/api`
 - Optional `LOG_INGEST_API_KEY` to protect the `/api/logs/batch` endpoint
@@ -121,9 +122,9 @@ Remember to turn the flags back to `false` once troubleshooting is complete.
 ## Observability & Retention
 
 - Backend logs are emitted in structured JSON, written both to stdout and `logs/backend.log`.
-- `BackendLogTailService` streams new lines into the `backend_logs` table, making them queryable via the frontend Log Viewer and API (`/api/logs/backend`).
+- `BackendLogTailService` streams new lines into the `backend_logs` table, making them queryable via the frontend Log Viewer and API (`/api/logs/backend`). Tune polling cadence (`BACKEND_LOG_POLL_INTERVAL`), batch size (`BACKEND_LOG_BATCH_SIZE`), and safety limits (`LOG_INGEST_MAX_BATCH`) to match your environment.
 - `BackendLogRetentionService` purges entries older than `BACKEND_LOG_RETENTION_DAYS` (default 7 days).
-- Use the Log Viewer tab to filter by level, correlation ID, event name, or free-text search; expand rows to inspect full payloads.
+- Use the Log Viewer tab to filter by level, correlation ID, event name, or free-text search; expand rows to inspect full payloads. Remote UI log ingestion remains disabled unless `VITE_ENABLE_REMOTE_LOGS=true`.
 - Host-level rotation (`logrotate`, etc.) can be layered onto `logs/backend.log` without breaking ingestion—the tailer handles truncation and rotations automatically.
 
 ## Webhook / L1 Stream Tester

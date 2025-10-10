@@ -52,6 +52,12 @@ const formatPercent = (value: unknown, fractionDigits = 2) => {
   return `${numeric.toFixed(fractionDigits)}%`;
 };
 
+const formatSpotCurrency = (value: unknown) => {
+  const numeric = toNumber(value);
+  if (numeric === null) return "--";
+  return `$${formatCurrencyValue(numeric)}`;
+};
+
 const formatDateTime = (value: unknown) => {
   if (!value) return "--";
   const text = typeof value === "string" ? value : String(value);
@@ -243,6 +249,14 @@ export default function TradeHistoryTable() {
       }
     },
     {
+      title: "Max Drawdown",
+      dataIndex: "pnl_summary",
+      render: (_: unknown, record: TradingSessionSummary) => {
+        const summary = record.pnl_summary as Record<string, unknown> | undefined;
+        return renderCurrency(getSummaryValue(summary, ["max_drawdown_seen", "max_drawdown"]));
+      }
+    },
+    {
       title: "Exit Reason",
       dataIndex: "exit_reason",
       render: (_: unknown, record: TradingSessionSummary) => {
@@ -294,7 +308,13 @@ export default function TradeHistoryTable() {
   const trailingRecord =
     toRecord(monitorSnapshotRecord?.["trailing"]) ||
     toRecord(summaryRecord?.["trailing"]) ||
-    toRecord(monitorMetaRecord?.["trailing"]);
+    toRecord(monitorMetaRecord?.["trailing"]) ||
+    toRecord(runtimeRecord?.["trailing"]);
+  const spotRecord =
+    toRecord(monitorSnapshotRecord?.["spot"]) ||
+    toRecord(summaryRecord?.["spot"]) ||
+    toRecord(monitorMetaRecord?.["spot"]) ||
+    toRecord(metadataRecord?.["spot"]);
   const exitReasonDetail =
     detail?.exit_reason ||
     (summaryRecord?.["exit_reason"] as string | undefined) ||
@@ -308,6 +328,13 @@ export default function TradeHistoryTable() {
   const maxProfitValue = getSummaryValue(trailingRecord, ["max_profit_seen"]);
   const maxProfitPctValue = getSummaryValue(trailingRecord, ["max_profit_seen_pct"]);
   const trailingLevelPctValue = getSummaryValue(trailingRecord, ["trailing_level_pct"]);
+  const maxDrawdownValue = getSummaryValue(trailingRecord, ["max_drawdown_seen"]);
+  const maxDrawdownPctValue = getSummaryValue(trailingRecord, ["max_drawdown_seen_pct"]);
+  const spotEntryValue = getSummaryValue(spotRecord, ["entry"]);
+  const spotExitValue = getSummaryValue(spotRecord, ["exit"]);
+  const spotHighValue = getSummaryValue(spotRecord, ["high"]);
+  const spotLowValue = getSummaryValue(spotRecord, ["low"]);
+  const spotLastValue = getSummaryValue(spotRecord, ["last"]);
 
   const legColumns = [
     {
@@ -434,6 +461,13 @@ export default function TradeHistoryTable() {
               <Descriptions.Item label="Max Profit Seen">{renderCurrency(maxProfitValue)}</Descriptions.Item>
               <Descriptions.Item label="Max Profit Seen %">{renderPercentTag(maxProfitPctValue)}</Descriptions.Item>
               <Descriptions.Item label="Trailing Level %">{renderPercentTag(trailingLevelPctValue)}</Descriptions.Item>
+              <Descriptions.Item label="Max Drawdown">{renderCurrency(maxDrawdownValue)}</Descriptions.Item>
+              <Descriptions.Item label="Max Drawdown %">{renderPercentTag(maxDrawdownPctValue)}</Descriptions.Item>
+              <Descriptions.Item label="Spot Entry">{formatSpotCurrency(spotEntryValue)}</Descriptions.Item>
+              <Descriptions.Item label="Spot Exit">{formatSpotCurrency(spotExitValue)}</Descriptions.Item>
+              <Descriptions.Item label="Spot High">{formatSpotCurrency(spotHighValue)}</Descriptions.Item>
+              <Descriptions.Item label="Spot Low">{formatSpotCurrency(spotLowValue)}</Descriptions.Item>
+              <Descriptions.Item label="Spot Last">{formatSpotCurrency(spotLastValue)}</Descriptions.Item>
             </Descriptions>
             <Divider>Legs</Divider>
             <Table

@@ -516,6 +516,13 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
     state.active = True
     state.trailing_level = 0.15
     state.max_profit_seen = 120.0
+    state.max_profit_seen_pct = 12.0
+    state.max_drawdown_seen = 45.0
+    state.max_drawdown_seen_pct = 4.5
+    state.spot_entry_price = 62750.0
+    state.spot_last_price = 63010.5
+    state.spot_high_price = 63120.0
+    state.spot_low_price = 62500.0
     snapshot_timestamp = datetime.utcnow().isoformat()
     state.last_monitor_snapshot = {
         "generated_at": snapshot_timestamp,
@@ -530,7 +537,22 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
         "totals": {"realized": 0.0, "unrealized": 25.0, "total_pnl": 25.0},
         "planned_exit_at": datetime.utcnow().isoformat(),
         "time_to_exit_seconds": 3600.0,
-        "trailing": {"level": 0.15, "max_profit_seen": 120.0, "enabled": True},
+        "trailing": {
+            "level": 0.15,
+            "trailing_level_pct": 0.15,
+            "max_profit_seen": 120.0,
+            "max_profit_seen_pct": 12.0,
+            "max_drawdown_seen": 45.0,
+            "max_drawdown_seen_pct": 4.5,
+            "enabled": True,
+        },
+        "spot": {
+            "entry": 62750.0,
+            "last": 63010.5,
+            "high": 63120.0,
+            "low": 62500.0,
+            "updated_at": snapshot_timestamp,
+        },
     }
     engine._state = state
 
@@ -540,7 +562,57 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 25.0
     assert snapshot["trailing"]["enabled"] is True
+    assert snapshot["trailing"]["max_drawdown_seen"] == pytest.approx(45.0)
+    assert snapshot["spot"]["last"] == pytest.approx(63010.5)
     assert snapshot["strategy_id"] == "runtime-strategy"
+
+
+@pytest.mark.asyncio
+async def test_refresh_spot_state_updates_runtime_metadata():
+    config = TradingConfiguration(name="Spot Config", quantity=1, contract_size=1.0)
+    session = StrategySession(
+        strategy_id="spot-strategy",
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+    )
+    engine = TradingEngine()
+    state = StrategyRuntimeState(strategy_id="spot-strategy", config=config, session=session)
+    engine._state = state
+
+    observed_timestamp = datetime.now(timezone.utc)
+    engine._fetch_spot_price = AsyncMock(return_value=(63100.0, observed_timestamp, ".DEXBTCUSD"))  # type: ignore[attr-defined]
+
+    await engine._refresh_spot_state(state, mark_entry=True)
+
+    runtime_meta = (state.session.session_metadata or {}).get("runtime", {})
+    spot_meta = runtime_meta.get("spot")
+    assert spot_meta is not None
+    assert spot_meta["entry"] == pytest.approx(63100.0)
+    assert spot_meta["last"] == pytest.approx(63100.0)
+    assert state.spot_entry_price == pytest.approx(63100.0)
+    assert isinstance(spot_meta.get("updated_at"), str)
+
+
+def test_update_trailing_state_persists_drawdown_metadata():
+    config = TradingConfiguration(name="Trailing Config", trailing_sl_enabled=False)
+    session = StrategySession(
+        strategy_id="trail-strategy",
+        status="running",
+        activated_at=datetime.utcnow(),
+        config_snapshot={},
+    )
+    engine = TradingEngine()
+    state = StrategyRuntimeState(strategy_id="trail-strategy", config=config, session=session)
+    engine._state = state
+
+    engine._update_trailing_state(latest_pnl=-75.0, notional=1000.0)
+
+    runtime_meta = (state.session.session_metadata or {}).get("runtime", {})
+    trailing_meta = runtime_meta.get("trailing")
+    assert trailing_meta is not None
+    assert trailing_meta["max_drawdown_seen"] == pytest.approx(75.0)
+    assert trailing_meta["max_drawdown_seen_pct"] == pytest.approx(7.5)
 
 
 @pytest.mark.asyncio
@@ -581,6 +653,8 @@ async def test_trading_service_runtime_snapshot_skips_stale_metadata(db_session)
     assert snapshot.get("positions") == []
     assert snapshot["totals"]["total_pnl"] == 0.0
     assert snapshot["schedule"]["planned_exit_at"] is None
+    assert snapshot["trailing"]["max_drawdown_seen"] == 0.0
+    assert snapshot["spot"]["last"] is None
 
 
 @pytest.mark.asyncio
@@ -606,6 +680,38 @@ async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(d
                     "planned_exit_at": "2025-10-05T15:20:00+00:00",
                     "time_to_exit_seconds": 3600.0,
                     "generated_at": "2025-10-05T11:00:00+00:00",
+                    "trailing": {
+                        "level": 0.12,
+                        "trailing_level_pct": 0.12,
+                        "max_profit_seen": 220.0,
+                        "max_profit_seen_pct": 22.0,
+                        "max_drawdown_seen": 55.0,
+                        "max_drawdown_seen_pct": 5.5,
+                        "enabled": True,
+                    },
+                    "spot": {
+                        "entry": 63000.0,
+                        "last": 62950.0,
+                        "high": 63300.0,
+                        "low": 62800.0,
+                        "updated_at": "2025-10-05T11:00:00+00:00",
+                    },
+                },
+                "trailing": {
+                    "level": 0.12,
+                    "trailing_level_pct": 0.12,
+                    "max_profit_seen": 220.0,
+                    "max_profit_seen_pct": 22.0,
+                    "max_drawdown_seen": 55.0,
+                    "max_drawdown_seen_pct": 5.5,
+                    "enabled": True,
+                },
+                "spot": {
+                    "entry": 63000.0,
+                    "last": 62950.0,
+                    "high": 63300.0,
+                    "low": 62800.0,
+                    "updated_at": "2025-10-05T11:00:00+00:00",
                 },
             }
         },
@@ -621,6 +727,8 @@ async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(d
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 15.0
     assert snapshot["schedule"]["planned_exit_at"] == "2025-10-05T15:20:00+00:00"
+    assert snapshot["trailing"]["max_drawdown_seen"] == pytest.approx(55.0)
+    assert snapshot["spot"]["last"] == pytest.approx(62950.0)
 
 
 @pytest.mark.asyncio

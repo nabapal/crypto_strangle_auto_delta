@@ -281,10 +281,9 @@ This script:
 ---
 
 ## Known Issues & TODOs
-- **Failing Test**: `tests/test_auth_api.py::test_protected_endpoint_requires_auth` expects "credentials" in the 401 response; FastAPI returns "Not authenticated". Update assertion accordingly.
 - **Start Script Dependency**: `scripts/start_local.sh` uses root `.venv`; ensure backend package installed there (`pip install -e backend[dev]`).
 - **Bundle Size Warning**: Vite emits chunk-size warnings (>500 kB). Investigate code-splitting or adjust `build.chunkSizeWarningLimit` if needed.
-- **Documentation Sync**: Ensure `.env.example` and README stay aligned with configuration defaults and new features.
+- **Timezone-aware Datetimes**: Replace `datetime.utcnow()` usage with `datetime.now(datetime.UTC)` to silence deprecation warnings in tests and services.
 
 ---
 

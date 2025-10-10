@@ -32,12 +32,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       const profile = await fetchCurrentUser();
       setUser(profile);
-    } catch (error) {
+    } catch (caughtError) {
       clearToken();
       setUser(null);
       logger.warn("Failed to fetch current user; clearing session", {
         event: "auth_bootstrap_failed",
-        error
+        error: caughtError instanceof Error ? caughtError.message : caughtError
       });
     } finally {
       setInitializing(false);
@@ -81,7 +81,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const profile = await fetchCurrentUser();
       setUser(profile);
       return profile;
-    } catch (error) {
+  } catch (error) {
+      logger.warn("Failed to refresh user", {
+        event: "auth_refresh_failed",
+        error
+      });
       clearToken();
       setUser(null);
       return null;

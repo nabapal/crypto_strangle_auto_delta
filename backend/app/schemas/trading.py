@@ -115,8 +115,11 @@ class StrategyRuntimeTotals(BaseModel):
 
 class StrategyRuntimeTrailing(BaseModel):
     level: float = 0.0
+    trailing_level_pct: float = 0.0
     max_profit_seen: float = 0.0
     max_profit_seen_pct: float = 0.0
+    max_drawdown_seen: float = 0.0
+    max_drawdown_seen_pct: float = 0.0
     enabled: bool = False
 
 
@@ -126,6 +129,15 @@ class StrategyRuntimeLimits(BaseModel):
     effective_loss_pct: float = 0.0
     trailing_enabled: bool = False
     trailing_level_pct: float = 0.0
+
+
+class StrategyRuntimeSpot(BaseModel):
+    entry: float | None = None
+    exit: float | None = None
+    last: float | None = None
+    high: float | None = None
+    low: float | None = None
+    updated_at: datetime | None = None
 
 
 class StrategyRuntimeResponse(BaseModel):
@@ -141,5 +153,6 @@ class StrategyRuntimeResponse(BaseModel):
     totals: StrategyRuntimeTotals
     limits: StrategyRuntimeLimits
     trailing: StrategyRuntimeTrailing
+    spot: StrategyRuntimeSpot | None = None
     exit_reason: Optional[str] = None
     config: dict | None = None

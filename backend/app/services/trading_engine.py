@@ -112,12 +112,20 @@ class StrategyRuntimeState:
     trailing_level: float = 0.0
     max_profit_seen: float = 0.0
     max_profit_seen_pct: float = 0.0
+    max_drawdown_seen: float = 0.0
+    max_drawdown_seen_pct: float = 0.0
     portfolio_notional: float = 0.0
     scheduled_entry_at: datetime | None = None
     entry_summary: Dict[str, Any] = field(default_factory=dict)
     last_monitor_snapshot: Dict[str, Any] = field(default_factory=dict)
     exit_reason: str | None = None
     log_tokens: list = field(default_factory=list)
+    spot_entry_price: float | None = None
+    spot_exit_price: float | None = None
+    spot_last_price: float | None = None
+    spot_high_price: float | None = None
+    spot_low_price: float | None = None
+    spot_last_updated_at: datetime | None = None
 
 
 class TradingEngine:
@@ -158,6 +166,188 @@ class TradingEngine:
         if notional <= 0:
             return percent
         return (percent / 100) * notional
+
+    def _spot_symbol_candidates(self, config: TradingConfiguration) -> list[str]:
+        underlying = str(getattr(config, "underlying", None) or self._settings.default_underlying or "BTC").upper()
+        sanitized = "".join(ch for ch in underlying if ch.isalnum())
+        base = sanitized or "BTC"
+        base_with_dash = f"{base}-USD"
+        candidates = [
+            f".DEX{base}USD",
+            f"{base}USD",
+            base_with_dash,
+            base_with_dash.replace("USD", "USDT"),
+            f"{base}USDT",
+        ]
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for symbol in candidates:
+            if symbol and symbol not in seen:
+                ordered.append(symbol)
+                seen.add(symbol)
+        return ordered
+
+    @staticmethod
+    def _parse_spot_timestamp(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value.astimezone(UTC)
+        if isinstance(value, (int, float)):
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+            if numeric > 1_000_000_000_000:  # assume milliseconds
+                numeric /= 1000
+            try:
+                return datetime.fromtimestamp(numeric, tz=UTC)
+            except (OverflowError, OSError, ValueError):
+                return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+            try:
+                parsed = datetime.fromisoformat(normalized)
+                return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+            except ValueError:
+                return None
+        return None
+
+    def _parse_spot_result(self, payload: dict[str, Any]) -> tuple[float | None, datetime | None]:
+        price_keys = ("price", "spot_price", "mark_price", "last_price", "index_price")
+        price: float | None = None
+        for key in price_keys:
+            price = self._optional_price(payload.get(key))
+            if price is not None:
+                break
+        if price is None:
+            return None, None
+        timestamp_keys = ("timestamp", "time", "ts", "updated_at", "last_traded_at", "last_update")
+        timestamp: datetime | None = None
+        for key in timestamp_keys:
+            timestamp = self._parse_spot_timestamp(payload.get(key))
+            if timestamp is not None:
+                break
+        if timestamp is None:
+            timestamp = datetime.now(UTC)
+        return price, timestamp
+
+    async def _fetch_spot_price(self, state: StrategyRuntimeState) -> tuple[float | None, datetime | None, str | None]:
+        client = self._client
+        if client is None:
+            return None, None, None
+        symbols = self._spot_symbol_candidates(state.config)
+        for symbol in symbols:
+            try:
+                response = await client.get_ticker(symbol)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 404:
+                    continue
+                logger.warning(
+                    "Spot ticker request failed",
+                    extra={
+                        "event": "spot_ticker_error",
+                        "symbol": symbol,
+                        "status": status,
+                        "strategy_id": state.strategy_id,
+                    },
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Spot ticker call errored",
+                    exc_info=exc,
+                    extra={
+                        "event": "spot_ticker_exception",
+                        "symbol": symbol,
+                        "strategy_id": state.strategy_id,
+                    },
+                )
+                continue
+            result = response.get("result") or response.get("data") or {}
+            price, timestamp = self._parse_spot_result(result if isinstance(result, dict) else {})
+            if price is not None:
+                return price, timestamp, symbol
+        return None, None, None
+
+    def _spot_snapshot(self, state: StrategyRuntimeState) -> dict[str, Any]:
+        return self._json_ready(
+            {
+                "entry": state.spot_entry_price,
+                "exit": state.spot_exit_price,
+                "last": state.spot_last_price,
+                "high": state.spot_high_price,
+                "low": state.spot_low_price,
+                "updated_at": self._serialize_datetime(state.spot_last_updated_at),
+            }
+        )
+
+    def _trailing_snapshot(self, state: StrategyRuntimeState) -> dict[str, Any]:
+        enabled = bool(getattr(state.config, "trailing_sl_enabled", False))
+        payload = {
+            "level": state.trailing_level,
+            "trailing_level_pct": state.trailing_level,
+            "max_profit_seen": state.max_profit_seen,
+            "max_profit_seen_pct": state.max_profit_seen_pct,
+            "max_drawdown_seen": state.max_drawdown_seen,
+            "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
+            "enabled": enabled,
+        }
+        return self._json_ready(payload)
+
+    async def _refresh_spot_state(
+        self,
+        state: StrategyRuntimeState,
+        *,
+        mark_entry: bool = False,
+        mark_exit: bool = False,
+    ) -> None:
+        price, timestamp, symbol = await self._fetch_spot_price(state)
+        if price is None:
+            return
+        timestamp = timestamp or datetime.now(UTC)
+        previous_last = state.spot_last_price
+        previous_timestamp = state.spot_last_updated_at
+        updated = False
+        state.spot_last_price = price
+        state.spot_last_updated_at = timestamp
+        if previous_last != price or previous_timestamp != timestamp:
+            updated = True
+        if state.spot_entry_price is None or mark_entry:
+            if state.spot_entry_price != price or mark_entry:
+                updated = True
+            state.spot_entry_price = price
+        if mark_exit:
+            if state.spot_exit_price != price or mark_exit:
+                updated = True
+            state.spot_exit_price = price
+        if state.spot_high_price is None or price > state.spot_high_price:
+            updated = True
+            state.spot_high_price = price
+        if state.spot_low_price is None or price < state.spot_low_price:
+            updated = True
+            state.spot_low_price = price
+        if previous_last != price:
+            logger.debug(
+                "Spot price updated",
+                extra={
+                    "event": "spot_price_update",
+                    "symbol": symbol,
+                    "price": price,
+                    "entry": state.spot_entry_price,
+                    "high": state.spot_high_price,
+                    "low": state.spot_low_price,
+                    "mark_entry": mark_entry,
+                    "mark_exit": mark_exit,
+                    "strategy_id": state.strategy_id,
+                },
+            )
+        if updated:
+            self._merge_session_metadata(state, {
+                "spot": self._spot_snapshot(state),
+            })
 
     def _validate_configuration(self, config: TradingConfiguration) -> None:
         try:
@@ -356,7 +546,22 @@ class TradingEngine:
                     "trailing_enabled": False,
                     "trailing_level_pct": 0.0,
                 },
-                    "trailing": {"level": 0.0, "max_profit_seen": 0.0, "max_profit_seen_pct": 0.0, "enabled": False},
+                "trailing": {
+                    "level": 0.0,
+                    "max_profit_seen": 0.0,
+                    "max_profit_seen_pct": 0.0,
+                    "max_drawdown_seen": 0.0,
+                    "max_drawdown_seen_pct": 0.0,
+                    "enabled": False,
+                },
+                "spot": {
+                    "entry": None,
+                    "exit": None,
+                    "last": None,
+                    "high": None,
+                    "low": None,
+                    "updated_at": None,
+                },
                 "exit_reason": None,
                 "config": None,
             }
@@ -478,8 +683,11 @@ class TradingEngine:
 
         trailing_info = runtime_summary.get("trailing") or {
             "level": state.trailing_level,
+            "trailing_level_pct": state.trailing_level,
             "max_profit_seen": state.max_profit_seen,
             "max_profit_seen_pct": state.max_profit_seen_pct,
+            "max_drawdown_seen": state.max_drawdown_seen,
+            "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
             "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
         }
         if isinstance(trailing_info, dict):
@@ -487,7 +695,26 @@ class TradingEngine:
             state.max_profit_seen_pct = self._normalize_percent(
                 trailing_info.get("max_profit_seen_pct", state.max_profit_seen_pct)
             )
-            state.trailing_level = self._normalize_percent(trailing_info.get("level", state.trailing_level))
+            state.max_drawdown_seen = float(trailing_info.get("max_drawdown_seen", state.max_drawdown_seen) or 0.0)
+            state.max_drawdown_seen_pct = self._normalize_percent(
+                trailing_info.get("max_drawdown_seen_pct", state.max_drawdown_seen_pct)
+            )
+            level_value = trailing_info.get("level")
+            if level_value is None:
+                level_value = trailing_info.get("trailing_level_pct", state.trailing_level)
+            state.trailing_level = self._normalize_percent(level_value)
+            trailing_info = {
+                **trailing_info,
+                "level": state.trailing_level,
+                "trailing_level_pct": state.trailing_level,
+                "max_profit_seen": state.max_profit_seen,
+                "max_profit_seen_pct": state.max_profit_seen_pct,
+                "max_drawdown_seen": state.max_drawdown_seen,
+                "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
+                "enabled": bool(
+                    trailing_info.get("enabled", getattr(state.config, "trailing_sl_enabled", False))
+                ),
+            }
 
         entry_payload = self._json_ready(state.entry_summary) if state.entry_summary else None
         entry_status = str(state.entry_summary.get("status", "waiting")) if state.entry_summary else "waiting"
@@ -500,6 +727,9 @@ class TradingEngine:
             status = "cooldown"
 
         generated_at = runtime_summary.get("generated_at", now.isoformat())
+        spot_info = runtime_summary.get("spot") if isinstance(runtime_summary.get("spot"), dict) else None
+        if spot_info is None:
+            spot_info = self._spot_snapshot(state)
 
         return {
             "status": status,
@@ -519,6 +749,7 @@ class TradingEngine:
             "totals": totals,
             "limits": limits,
             "trailing": trailing_info,
+            "spot": spot_info,
             "exit_reason": exit_reason,
             "config": self._json_ready(self._config_summary(state.config)),
         }
@@ -901,6 +1132,7 @@ class TradingEngine:
             ]
             if not live_trading_enabled:
                 self._update_entry_summary(state, {"mode": "simulation"})
+        await self._refresh_spot_state(state, mark_entry=True)
         state.active = True
         self._update_entry_summary(
             state,
@@ -930,17 +1162,11 @@ class TradingEngine:
         state.pnl_history.append(pnl_snapshot)
         state.portfolio_notional = totals.get("notional", 0.0) or 0.0
         self._update_trailing_state(pnl_snapshot["pnl"], state.portfolio_notional)
+        await self._refresh_spot_state(state)
         planned_exit_at = self._compute_exit_time(state.config)
         time_to_exit = None
         if planned_exit_at is not None:
             time_to_exit = (planned_exit_at - snapshot_time).total_seconds()
-
-        state.session.pnl_summary = {
-            "realized": totals["realized"],
-            "unrealized": totals["unrealized"],
-            "total": totals["total_pnl"],
-            "updated_at": snapshot_time.isoformat(),
-        }
 
         config = state.config
         max_profit_pct = self._normalize_percent(getattr(config, "max_profit_pct", 0.0))
@@ -965,6 +1191,26 @@ class TradingEngine:
             },
         )
 
+        trailing_snapshot = self._trailing_snapshot(state)
+        spot_snapshot = self._spot_snapshot(state)
+
+        state.session.pnl_summary = {
+            "realized": totals["realized"],
+            "unrealized": totals["unrealized"],
+            "total": totals["total_pnl"],
+            "total_pnl": totals["total_pnl"],
+            "total_pnl_pct": totals.get("total_pnl_pct"),
+            "notional": totals.get("notional"),
+            "updated_at": snapshot_time.isoformat(),
+            "max_profit_seen": state.max_profit_seen,
+            "max_profit_seen_pct": state.max_profit_seen_pct,
+            "max_drawdown_seen": state.max_drawdown_seen,
+            "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
+            "trailing_level_pct": state.trailing_level,
+            "trailing_enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
+            "spot": spot_snapshot,
+        }
+
         runtime_summary = {
             "generated_at": snapshot_time.isoformat(),
             "positions": positions_payload,
@@ -972,12 +1218,8 @@ class TradingEngine:
             "limits": limits,
             "planned_exit_at": self._serialize_datetime(planned_exit_at),
             "time_to_exit_seconds": time_to_exit,
-            "trailing": {
-                "level": state.trailing_level,
-                "max_profit_seen": state.max_profit_seen,
-                "max_profit_seen_pct": state.max_profit_seen_pct,
-                "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
-            },
+            "trailing": trailing_snapshot,
+            "spot": spot_snapshot,
             "status": "live" if state.active else "idle",
             "exit_reason": state.exit_reason,
         }
@@ -987,6 +1229,8 @@ class TradingEngine:
             {
                 "monitor": runtime_summary,
                 "entry": self._json_ready(state.entry_summary),
+                "spot": spot_snapshot,
+                "trailing": trailing_snapshot,
             },
         )
 
@@ -1000,6 +1244,8 @@ class TradingEngine:
                 "totals": totals,
                 "trailing_level_pct": state.trailing_level,
                 "max_profit_seen_pct": state.max_profit_seen_pct,
+                "max_drawdown_seen": state.max_drawdown_seen,
+                "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
             },
         )
 
@@ -1060,6 +1306,7 @@ class TradingEngine:
                 )
 
         reason = state.exit_reason or "forced_exit"
+        await self._refresh_spot_state(state, mark_exit=True)
         summary = self._finalize_session_summary(state, reason)
         logger.info(
             "Force exit complete",
@@ -2575,12 +2822,8 @@ class TradingEngine:
             "total_pnl_pct": total_pct,
         }
 
-        trailing_summary = {
-            "max_profit_seen": state.max_profit_seen,
-            "max_profit_seen_pct": state.max_profit_seen_pct,
-            "trailing_level_pct": state.trailing_level,
-            "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
-        }
+        trailing_summary = self._trailing_snapshot(state)
+        spot_summary = self._spot_snapshot(state)
 
         summary = {
             "generated_at": now.isoformat(),
@@ -2589,6 +2832,7 @@ class TradingEngine:
             "totals": self._json_ready(totals),
             "pnl_history": [self._json_ready(item) for item in state.pnl_history],
             "trailing": self._json_ready(trailing_summary),
+            "spot": spot_summary,
         }
 
         state.exit_reason = reason
@@ -2608,6 +2852,9 @@ class TradingEngine:
             "max_profit_seen_pct": trailing_summary["max_profit_seen_pct"],
             "trailing_level_pct": trailing_summary["trailing_level_pct"],
             "trailing_enabled": trailing_summary["enabled"],
+            "max_drawdown_seen": trailing_summary.get("max_drawdown_seen", state.max_drawdown_seen),
+            "max_drawdown_seen_pct": trailing_summary.get("max_drawdown_seen_pct", state.max_drawdown_seen_pct),
+            "spot": spot_summary,
         }
 
         monitor_snapshot = dict(state.last_monitor_snapshot or {})
@@ -2618,10 +2865,15 @@ class TradingEngine:
                 "totals": totals,
                 "legs": summary["legs"],
                 "trailing": trailing_summary,
+                "spot": spot_summary,
             }
         )
         state.last_monitor_snapshot = monitor_snapshot
-        self._merge_session_metadata(state, {"monitor": monitor_snapshot})
+        self._merge_session_metadata(state, {
+            "monitor": monitor_snapshot,
+            "spot": spot_summary,
+            "trailing": trailing_summary,
+        })
 
         metadata = dict(state.session.session_metadata or {})
         metadata["summary"] = self._json_ready(summary)
@@ -2636,6 +2888,8 @@ class TradingEngine:
                 "leg_count": len(summary.get("legs", [])),
                 "totals": summary.get("totals"),
                 "trailing": summary.get("trailing"),
+                "max_drawdown_seen": trailing_summary.get("max_drawdown_seen"),
+                "max_drawdown_seen_pct": trailing_summary.get("max_drawdown_seen_pct"),
             },
         )
 
@@ -2860,12 +3114,27 @@ class TradingEngine:
         previous_max_profit = state.max_profit_seen
         previous_max_profit_pct = state.max_profit_seen_pct
         previous_level = state.trailing_level
+        previous_max_drawdown = state.max_drawdown_seen
+        previous_max_drawdown_pct = state.max_drawdown_seen_pct
         state.max_profit_seen = max(state.max_profit_seen, latest_pnl)
         latest_pct = self._percent_from_amount(latest_pnl, notional)
         state.max_profit_seen_pct = max(state.max_profit_seen_pct, latest_pct)
+        drawdown_abs = max(0.0, -latest_pnl)
+        drawdown_pct = max(0.0, -latest_pct)
+        if drawdown_abs > state.max_drawdown_seen:
+            state.max_drawdown_seen = drawdown_abs
+        if drawdown_pct > state.max_drawdown_seen_pct:
+            state.max_drawdown_seen_pct = drawdown_pct
         config = state.config
-        if not bool(getattr(config, "trailing_sl_enabled", False)):
-            if previous_max_profit != state.max_profit_seen or previous_max_profit_pct != state.max_profit_seen_pct:
+        trailing_enabled = bool(getattr(config, "trailing_sl_enabled", False))
+        metrics_changed = (
+            previous_max_profit != state.max_profit_seen
+            or previous_max_profit_pct != state.max_profit_seen_pct
+            or previous_max_drawdown != state.max_drawdown_seen
+            or previous_max_drawdown_pct != state.max_drawdown_seen_pct
+        )
+        if not trailing_enabled:
+            if metrics_changed:
                 logger.debug(
                     "Trailing metrics updated without SL",
                     extra={
@@ -2874,8 +3143,11 @@ class TradingEngine:
                         "latest_pct": latest_pct,
                         "max_profit_seen": state.max_profit_seen,
                         "max_profit_seen_pct": state.max_profit_seen_pct,
+                        "max_drawdown_seen": state.max_drawdown_seen,
+                        "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
                     },
                 )
+                self._merge_session_metadata(state, {"trailing": self._trailing_snapshot(state)})
             return
         rules = getattr(config, "trailing_rules", {}) or {}
         applicable_level = 0.0
@@ -2892,6 +3164,7 @@ class TradingEngine:
                 applicable_level = max(applicable_level, sl_pct)
                 rules_applied.append({"trigger_pct": trigger_pct, "stop_level_pct": sl_pct})
         state.trailing_level = applicable_level
+        metrics_changed = metrics_changed or previous_level != state.trailing_level
         logger.debug(
             "Trailing stop state evaluated",
             extra={
@@ -2902,9 +3175,13 @@ class TradingEngine:
                 "new_level_pct": state.trailing_level,
                 "max_profit_seen": state.max_profit_seen,
                 "max_profit_seen_pct": state.max_profit_seen_pct,
+                "max_drawdown_seen": state.max_drawdown_seen,
+                "max_drawdown_seen_pct": state.max_drawdown_seen_pct,
                 "rules_applied": rules_applied,
             },
         )
+        if metrics_changed:
+            self._merge_session_metadata(state, {"trailing": self._trailing_snapshot(state)})
 
     @staticmethod
     def _parse_trade_time(value: str | None) -> time_obj:

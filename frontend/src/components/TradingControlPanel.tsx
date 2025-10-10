@@ -90,6 +90,14 @@ const formatPercent = (value: unknown, maximumFractionDigits = 2) => {
   });
 };
 
+const formatSpotMetric = (value: unknown) => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "--";
+  }
+  return `$${formatNumber(numeric)}`;
+};
+
 const parseTimestamp = (value?: string | null): Date | null => {
   if (!value) return null;
   const date = new Date(value);
@@ -286,6 +294,7 @@ export default function TradingControlPanel() {
   };
   const deltaRange = Array.isArray(runtimeConfig?.delta_range) ? runtimeConfig.delta_range : undefined;
   const trailing = runtime?.trailing ?? null;
+  const backendSpot = runtime?.spot ?? null;
   const modeTagColor = runtime?.mode === "live" ? "green" : runtime?.mode === "simulation" ? "orange" : "default";
 
   const { price: spotPrice, lastUpdated: spotUpdatedAt, isConnected: spotConnected, error: spotError } = useDeltaSpotPrice();
@@ -430,10 +439,14 @@ export default function TradingControlPanel() {
     typeof maxLossAmount === "number" && Number.isFinite(maxLossAmount)
       ? `-$${formatCurrency(Math.abs(maxLossAmount))}`
       : null;
+  const trailingFloorCandidate =
+    limits?.trailing_level_pct ??
+    (typeof trailing?.trailing_level_pct === "number" ? trailing.trailing_level_pct : trailing?.level);
   const effectiveLossRepresentsFloor =
     (limits?.trailing_enabled ?? trailing?.enabled ?? false) &&
-    typeof limits?.trailing_level_pct === "number" &&
-    limits.trailing_level_pct > 0;
+    typeof trailingFloorCandidate === "number" &&
+    Number.isFinite(trailingFloorCandidate) &&
+    trailingFloorCandidate > 0;
   const effectiveLossAmountDisplay = (() => {
     if (!(typeof effectiveLossAmount === "number" && Number.isFinite(effectiveLossAmount))) {
       return null;
@@ -442,18 +455,36 @@ export default function TradingControlPanel() {
     return `${prefix}$${formatCurrency(Math.abs(effectiveLossAmount))}`;
   })();
 
-  const trailingLevelPct = limits?.trailing_level_pct ?? trailing?.level ?? 0;
+  const trailingLevelPct =
+    limits?.trailing_level_pct ??
+    (typeof trailing?.trailing_level_pct === "number" ? trailing.trailing_level_pct : trailing?.level ?? 0);
   const trailingEnabled = limits?.trailing_enabled ?? trailing?.enabled ?? false;
   const trailingMaxProfitSeen =
-    trailing && Number.isFinite(trailing.max_profit_seen) ? Number(trailing.max_profit_seen) : null;
-  const trailingMaxSeenPct =
-    trailingMaxProfitSeen !== null && typeof notional === "number" && notional > 0
-      ? (trailingMaxProfitSeen / notional) * 100
+    typeof trailing?.max_profit_seen === "number" && Number.isFinite(trailing.max_profit_seen)
+      ? Number(trailing.max_profit_seen)
+      : null;
+  const trailingMaxProfitPct =
+    typeof trailing?.max_profit_seen_pct === "number" && Number.isFinite(trailing.max_profit_seen_pct)
+      ? Number(trailing.max_profit_seen_pct)
+      : null;
+  const trailingMaxDrawdownSeen =
+    typeof trailing?.max_drawdown_seen === "number" && Number.isFinite(trailing.max_drawdown_seen)
+      ? Number(trailing.max_drawdown_seen)
+      : null;
+  const trailingMaxDrawdownPct =
+    typeof trailing?.max_drawdown_seen_pct === "number" && Number.isFinite(trailing.max_drawdown_seen_pct)
+      ? Number(trailing.max_drawdown_seen_pct)
       : null;
   const trailingMaxSeenDisplay =
     trailingMaxProfitSeen !== null
-      ? `Max Seen $${formatCurrency(trailingMaxProfitSeen)}${
-          trailingMaxSeenPct !== null ? ` (${formatPercent(trailingMaxSeenPct)}%)` : ""
+      ? `Max Profit +$${formatNumber(Math.abs(trailingMaxProfitSeen))}${
+          trailingMaxProfitPct !== null ? ` (${formatPercent(trailingMaxProfitPct)}%)` : ""
+        }`
+      : null;
+  const trailingDrawdownDisplay =
+    trailingMaxDrawdownSeen !== null
+      ? `Max Drawdown -$${formatNumber(Math.abs(trailingMaxDrawdownSeen))}${
+          trailingMaxDrawdownPct !== null ? ` (${formatPercent(trailingMaxDrawdownPct)}%)` : ""
         }`
       : null;
   const trailingDetail = trailingEnabled
@@ -465,7 +496,11 @@ export default function TradingControlPanel() {
   const trailingStatusTagColor = trailingEnabled ? "green" : "default";
   const trailingStatusTagLabel = trailingEnabled ? "Enabled" : "Disabled";
   const trailingMetaLines = trailingEnabled
-    ? [trailingLevelPct > 0 ? `Level ${formatPercent(trailingLevelPct)}%` : "Awaiting trigger", trailingMaxSeenDisplay]
+    ? [
+        trailingLevelPct > 0 ? `Level ${formatPercent(trailingLevelPct)}%` : "Awaiting trigger",
+        trailingMaxSeenDisplay,
+        trailingDrawdownDisplay
+      ]
         .filter(Boolean)
     : ["Trailing SL disabled"];
   const trailingAdjustmentActive =
@@ -473,6 +508,25 @@ export default function TradingControlPanel() {
     typeof maxLossPct === "number" &&
     typeof effectiveLossPct === "number" &&
     Math.abs(effectiveLossPct - maxLossPct) > 0.0001;
+
+  const backendSpotSessionLine = backendSpot
+    ? [
+        `Session Last ${formatSpotMetric(backendSpot.last)}`,
+        `High ${formatSpotMetric(backendSpot.high)}`,
+        `Low ${formatSpotMetric(backendSpot.low)}`
+      ].join(" · ")
+    : null;
+  const backendSpotEntryLine = backendSpot
+    ? [
+        `Entry ${formatSpotMetric(backendSpot.entry)}`,
+        backendSpot.exit !== null && backendSpot.exit !== undefined
+          ? `Exit ${formatSpotMetric(backendSpot.exit)}`
+          : null,
+        backendSpot.updated_at ? `Updated ${formatDateTime(backendSpot.updated_at)}` : null
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
 
   const canStart = runtimeStatus === "idle" || runtimeStatus === "cooldown";
   const canStop = runtimeStatus === "entering" || runtimeStatus === "live" || runtimeStatus === "waiting";
@@ -619,6 +673,16 @@ export default function TradingControlPanel() {
               ? `Updated ${spotUpdatedAt.toLocaleTimeString()}`
               : "Awaiting price feed"}
           </Text>
+          {backendSpotSessionLine && (
+            <Text type="secondary" style={{ display: "block" }}>
+              {backendSpotSessionLine}
+            </Text>
+          )}
+          {backendSpotEntryLine && (
+            <Text type="secondary" style={{ display: "block" }}>
+              {backendSpotEntryLine}
+            </Text>
+          )}
         </Col>
       </Row>
       {spotError && (

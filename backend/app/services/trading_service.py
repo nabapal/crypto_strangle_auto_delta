@@ -189,10 +189,18 @@ class TradingService:
                         if schedule.get("time_to_exit_seconds") is None and monitor_meta.get("time_to_exit_seconds") is not None:
                             schedule["time_to_exit_seconds"] = monitor_meta.get("time_to_exit_seconds")
                         snapshot["generated_at"] = snapshot.get("generated_at") or monitor_meta.get("generated_at")
+                        if monitor_meta.get("trailing"):
+                            snapshot["trailing"] = monitor_meta.get("trailing")
+                        if monitor_meta.get("spot"):
+                            snapshot["spot"] = monitor_meta.get("spot")
                     if runtime_meta_dict.get("scheduled_entry_at") and schedule.get("scheduled_entry_at") is None:
                         schedule["scheduled_entry_at"] = runtime_meta_dict.get("scheduled_entry_at")
                     if runtime_meta_dict.get("time_to_entry_seconds") and schedule.get("time_to_entry_seconds") is None:
                         schedule["time_to_entry_seconds"] = runtime_meta_dict.get("time_to_entry_seconds")
+                    if runtime_meta_dict.get("trailing") and not snapshot.get("trailing"):
+                        snapshot["trailing"] = runtime_meta_dict.get("trailing")
+                    if runtime_meta_dict.get("spot") and not snapshot.get("spot"):
+                        snapshot["spot"] = runtime_meta_dict.get("spot")
                 snapshot["schedule"] = schedule
             snapshot.setdefault(
                 "totals",
@@ -206,6 +214,29 @@ class TradingService:
                     "effective_loss_pct": 0.0,
                     "trailing_enabled": False,
                     "trailing_level_pct": 0.0,
+                },
+            )
+            snapshot.setdefault(
+                "trailing",
+                {
+                    "level": 0.0,
+                    "trailing_level_pct": 0.0,
+                    "max_profit_seen": 0.0,
+                    "max_profit_seen_pct": 0.0,
+                    "max_drawdown_seen": 0.0,
+                    "max_drawdown_seen_pct": 0.0,
+                    "enabled": False,
+                },
+            )
+            snapshot.setdefault(
+                "spot",
+                {
+                    "entry": None,
+                    "exit": None,
+                    "last": None,
+                    "high": None,
+                    "low": None,
+                    "updated_at": None,
                 },
             )
             snapshot.setdefault("exit_reason", None)

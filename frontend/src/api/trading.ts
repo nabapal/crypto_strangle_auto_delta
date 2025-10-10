@@ -80,7 +80,11 @@ export interface RuntimeTotals {
 
 export interface RuntimeTrailing {
   level: number;
+  trailing_level_pct: number;
   max_profit_seen: number;
+  max_profit_seen_pct: number;
+  max_drawdown_seen: number;
+  max_drawdown_seen_pct: number;
   enabled: boolean;
 }
 
@@ -90,6 +94,15 @@ export interface RuntimeLimits {
   effective_loss_pct: number;
   trailing_enabled: boolean;
   trailing_level_pct: number;
+}
+
+export interface RuntimeSpot {
+  entry: number | null;
+  exit: number | null;
+  last: number | null;
+  high: number | null;
+  low: number | null;
+  updated_at: string | null;
 }
 
 export interface StrategyRuntime {
@@ -105,6 +118,7 @@ export interface StrategyRuntime {
   totals: RuntimeTotals;
   limits: RuntimeLimits;
   trailing: RuntimeTrailing;
+  spot: RuntimeSpot | null;
   exit_reason: string | null;
   config: Record<string, unknown> | null;
 }
