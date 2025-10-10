@@ -158,7 +158,7 @@ client.interceptors.response.use(
       logger.setCorrelationId(String(responseCorrelationId));
     }
 
-    logAxiosError("API request failed", error, {
+  logAxiosError("API request failed", error, {
       event: "api_response_error",
       request_id: metadata?.requestId,
       method,
@@ -169,6 +169,18 @@ client.interceptors.response.use(
     if (error.response?.status === 401) {
       clearToken();
       emitLogout();
+    }
+
+    const detailMessage =
+      (error.response?.data as { detail?: string } | undefined)?.detail ??
+      (error.response?.data as { message?: string } | undefined)?.message ??
+      (error.response?.data as { error?: string } | undefined)?.error;
+
+    if (detailMessage) {
+      const enhancedError = new Error(detailMessage);
+      enhancedError.name = error.name;
+      (enhancedError as Error & { cause?: unknown }).cause = error;
+      return Promise.reject(enhancedError);
     }
 
     return Promise.reject(error);

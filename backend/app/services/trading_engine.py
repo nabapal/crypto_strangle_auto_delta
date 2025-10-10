@@ -31,6 +31,36 @@ UTC = timezone.utc
 IST = ZoneInfo("Asia/Kolkata")
 
 
+class ExpiredExpiryError(ValueError):
+    """Raised when a configured expiry date is already in the past."""
+
+    def __init__(self, expiry: date, raw_value: str | None = None):
+        formatted = expiry.isoformat()
+        if raw_value and raw_value != formatted:
+            message = (
+                f"Configured expiry date {raw_value} ({formatted}) has already passed; "
+                "update the trading configuration."
+            )
+        else:
+            message = (
+                f"Configured expiry date {formatted} has already passed; "
+                "update the trading configuration."
+            )
+        super().__init__(message)
+        self.expiry = expiry
+        self.raw_value = raw_value
+
+
+class InvalidExpiryError(ValueError):
+    """Raised when a configured expiry date cannot be parsed."""
+
+    def __init__(self, raw_value: str):
+        super().__init__(
+            f"Configured expiry date '{raw_value}' is not in a supported format; update the trading configuration."
+        )
+        self.raw_value = raw_value
+
+
 @dataclass
 class OptionContract:
     symbol: str
@@ -129,6 +159,38 @@ class TradingEngine:
             return percent
         return (percent / 100) * notional
 
+    def _validate_configuration(self, config: TradingConfiguration) -> None:
+        try:
+            self._get_valid_explicit_expiry(config)
+        except (ExpiredExpiryError, InvalidExpiryError) as exc:
+            event_name = (
+                "expired_expiry_configuration"
+                if isinstance(exc, ExpiredExpiryError)
+                else "invalid_expiry_configuration"
+            )
+            extra_payload = {
+                "event": event_name,
+                "configured_expiry": getattr(exc, "raw_value", None),
+                "configuration_id": getattr(config, "id", None),
+                "configuration_name": getattr(config, "name", None),
+            }
+            if isinstance(exc, ExpiredExpiryError):
+                extra_payload["normalized_expiry"] = exc.expiry.isoformat()
+            logger.error("Expiry configuration validation failed", extra=extra_payload)
+            raise
+
+    def _get_valid_explicit_expiry(self, config: TradingConfiguration) -> date | None:
+        explicit_expiry = cast(str | None, getattr(config, "expiry_date", None))
+        if not explicit_expiry:
+            return None
+        parsed = self._parse_config_expiry(explicit_expiry)
+        if not parsed:
+            raise InvalidExpiryError(explicit_expiry)
+        now_ist = datetime.now(IST).date()
+        if parsed < now_ist:
+            raise ExpiredExpiryError(expiry=parsed, raw_value=explicit_expiry)
+        return parsed
+
     def _resolve_portfolio_notional(self, state: StrategyRuntimeState) -> float:
         notional = state.portfolio_notional
         if notional and notional > 0:
@@ -150,6 +212,7 @@ class TradingEngine:
             self._stop_event.clear()
             self._settings = get_settings()
             self._debug_sampler = LogSampler(self._settings.engine_debug_sample_rate)
+            self._validate_configuration(config)
             self._client = DeltaExchangeClient()
             self._state = StrategyRuntimeState(strategy_id=strategy_id, config=config, session=session)
             self._state.scheduled_entry_at = self._compute_scheduled_entry(config)
@@ -1087,11 +1150,9 @@ class TradingEngine:
         return params, expiry_date
 
     def _resolve_target_expiry_date(self, config: TradingConfiguration) -> date | None:
-        explicit_expiry = cast(str | None, getattr(config, "expiry_date", None))
-        if explicit_expiry:
-            parsed = self._parse_config_expiry(explicit_expiry)
-            if parsed:
-                return parsed
+        explicit = self._get_valid_explicit_expiry(config)
+        if explicit:
+            return explicit
 
         buffer_hours = int(getattr(self._settings, "default_expiry_buffer_hours", 24) or 24)
         now_ist = datetime.now(IST)

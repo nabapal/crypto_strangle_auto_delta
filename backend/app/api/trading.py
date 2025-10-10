@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import OrderLedger, PositionLedger, StrategySession
 from ..schemas.trading import (
+    SessionCleanupResponse,
     StrategyRuntimeResponse,
     StrategySessionDetail,
     StrategySessionSummary,
@@ -16,6 +17,7 @@ from ..schemas.trading import (
     TradingControlResponse,
 )
 from ..services.trading_service import TradingService
+from ..services.trading_engine import ExpiredExpiryError, InvalidExpiryError
 from .deps import get_current_active_user, get_db_session
 
 router = APIRouter(
@@ -79,6 +81,8 @@ async def control_trading(payload: TradingControlRequest, session: AsyncSession 
     service = TradingService(session)
     try:
         result = await service.control(payload)
+    except (ExpiredExpiryError, InvalidExpiryError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:  # noqa: PERF203
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return TradingControlResponse(**result)
@@ -116,6 +120,14 @@ async def list_sessions(session: AsyncSession = Depends(get_db_session)):
         )
         for s in sessions
     ]
+
+
+@router.post("/sessions/cleanup", response_model=SessionCleanupResponse)
+async def cleanup_running_sessions(session: AsyncSession = Depends(get_db_session)):
+    service = TradingService(session)
+    stopped = await service.cleanup_sessions()
+    message = "No running sessions found" if stopped == 0 else f"Stopped {stopped} running session(s)"
+    return SessionCleanupResponse(stopped_sessions=stopped, message=message)
 
 
 @router.get("/sessions/{session_id}", response_model=StrategySessionDetail)

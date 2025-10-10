@@ -1,6 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.main import app
 from app.models import OrderLedger, PositionLedger, StrategySession
@@ -59,3 +60,37 @@ async def test_get_session_detail_returns_related_entities(db_session, auth_head
     assert len(payload["positions"]) == 1
     assert payload["positions"][0]["symbol"] == "BTC-TEST"
     assert payload["duration_seconds"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_running_sessions_marks_all_stopped(db_session, auth_headers):
+    now = datetime.now(timezone.utc)
+    running_one = StrategySession(strategy_id="cleanup-1", status="running", activated_at=now)
+    running_two = StrategySession(strategy_id="cleanup-2", status="running", activated_at=now)
+    already_stopped = StrategySession(
+        strategy_id="cleanup-3",
+        status="stopped",
+        activated_at=now,
+        deactivated_at=now,
+    )
+
+    db_session.add_all([running_one, running_two, already_stopped])
+    await db_session.flush()
+    await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", headers=auth_headers) as client:
+        response = await client.post("/api/trading/sessions/cleanup")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["stopped_sessions"] == 2
+    assert "Stopped 2" in payload["message"]
+
+    db_session.expire_all()
+    refreshed = await db_session.execute(
+        select(StrategySession).where(StrategySession.strategy_id.in_(["cleanup-1", "cleanup-2"]))
+    )
+    updated_sessions = refreshed.scalars().all()
+    assert all(session.status == "stopped" for session in updated_sessions)
+    assert all(session.deactivated_at is not None for session in updated_sessions)

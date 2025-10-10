@@ -10,7 +10,13 @@ import pytest
 from app.models import PositionLedger, StrategySession, TradingConfiguration, TradeAnalyticsSnapshot
 from app.schemas.trading import TradingControlRequest
 from app.services.delta_websocket_client import OptionPriceStream
-from app.services.trading_engine import OptionContract, StrategyRuntimeState, TradingEngine
+from app.services.trading_engine import (
+    ExpiredExpiryError,
+    InvalidExpiryError,
+    OptionContract,
+    StrategyRuntimeState,
+    TradingEngine,
+)
 from app.services.trading_service import TradingService
 from app.services.analytics_service import AnalyticsService
 
@@ -68,6 +74,53 @@ async def test_trading_engine_start_stop(db_session):
     await engine.stop()
     status = await engine.status()
     assert status["status"] == "idle" or status["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_trading_engine_start_rejects_expired_expiry(db_session):
+    expired_date = (datetime.now(timezone.utc) - timedelta(days=2)).date()
+    config = TradingConfiguration(name="Expired Config", expiry_date=expired_date.strftime("%Y-%m-%d"))
+    db_session.add(config)
+    await db_session.flush()
+
+    session = StrategySession(
+        strategy_id="expired-config-strategy",
+        status="running",
+        activated_at=None,
+        config_snapshot={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    engine = TradingEngine()
+
+    with pytest.raises(ExpiredExpiryError) as exc_info:
+        await engine.start(session, config)
+
+    assert expired_date.strftime("%Y-%m-%d") in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_trading_engine_start_rejects_unparseable_expiry(db_session):
+    config = TradingConfiguration(name="Invalid Expiry Config", expiry_date="10/04/2025")
+    db_session.add(config)
+    await db_session.flush()
+
+    session = StrategySession(
+        strategy_id="invalid-expiry-config-strategy",
+        status="running",
+        activated_at=None,
+        config_snapshot={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    engine = TradingEngine()
+
+    with pytest.raises(InvalidExpiryError) as exc_info:
+        await engine.start(session, config)
+
+    assert "10/04/2025" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -283,12 +336,13 @@ def test_compute_exit_time_rolls_over_when_time_already_passed():
 
 def test_select_contracts_prefers_highest_delta():
     engine = TradingEngine()
+    future_expiry = (datetime.now(timezone.utc) + timedelta(days=365)).date()
     config = TradingConfiguration(
         name="Delta Preference",
         underlying="BTC",
         delta_range_low=0.1,
         delta_range_high=0.2,
-        expiry_date="06-10-2025",
+        expiry_date=future_expiry.strftime("%d-%m-%Y"),
     )
 
     tickers = [
@@ -298,7 +352,7 @@ def test_select_contracts_prefers_highest_delta():
             "contract_type": "call_options",
             "greeks": {"delta": 0.12},
             "strike_price": 60000,
-            "expiry_date": "2025-10-06T08:00:00Z",
+            "expiry_date": f"{future_expiry.isoformat()}T08:00:00Z",
             "best_bid_price": 5.0,
             "best_ask_price": 6.0,
             "mark_price": 5.5,
@@ -310,7 +364,7 @@ def test_select_contracts_prefers_highest_delta():
             "contract_type": "call_options",
             "greeks": {"delta": 0.19},
             "strike_price": 58000,
-            "expiry_date": "2025-10-06T08:00:00Z",
+            "expiry_date": f"{future_expiry.isoformat()}T08:00:00Z",
             "best_bid_price": 7.0,
             "best_ask_price": 8.0,
             "mark_price": 7.4,
@@ -322,7 +376,7 @@ def test_select_contracts_prefers_highest_delta():
             "contract_type": "put_options",
             "greeks": {"delta": -0.11},
             "strike_price": 60000,
-            "expiry_date": "2025-10-06T08:00:00Z",
+            "expiry_date": f"{future_expiry.isoformat()}T08:00:00Z",
             "best_bid_price": 5.5,
             "best_ask_price": 6.5,
             "mark_price": 6.0,
@@ -334,7 +388,7 @@ def test_select_contracts_prefers_highest_delta():
             "contract_type": "put_options",
             "greeks": {"delta": -0.18},
             "strike_price": 58000,
-            "expiry_date": "2025-10-06T08:00:00Z",
+            "expiry_date": f"{future_expiry.isoformat()}T08:00:00Z",
             "best_bid_price": 8.5,
             "best_ask_price": 9.0,
             "mark_price": 8.7,

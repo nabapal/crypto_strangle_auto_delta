@@ -15,6 +15,13 @@ class TradingControlResponse(BaseModel):
     strategy_id: str | None = None
     status: Literal["starting", "running", "stopping", "stopped", "restarting", "panic", "error"]
     message: str
+    stopped_sessions: int | None = None
+    imported_positions: int | None = None
+
+
+class SessionCleanupResponse(BaseModel):
+    stopped_sessions: int
+    message: str
 
 
 class StrategySessionSummary(BaseModel):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -10,9 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi.encoders import jsonable_encoder
 
-from ..models import StrategySession, TradingConfiguration
+from ..models import OrderLedger, PositionLedger, StrategySession, TradingConfiguration
 from ..schemas.trading import TradingControlRequest
 from .analytics_service import AnalyticsService
+from .delta_exchange_client import DeltaExchangeClient
 from .trading_engine import TradingEngine
 from ..services.logging_utils import logging_context
 
@@ -52,6 +53,7 @@ class TradingService:
 
             if command.action == "start":
                 session = await self._create_session(config)
+                imported = await self._backfill_exchange_state(session)
                 strategy_id = await self.engine.start(session, config)
                 await self.session.commit()
                 logger.info(
@@ -62,21 +64,32 @@ class TradingService:
                         "session_id": session.id,
                     },
                 )
-                return {"status": "starting", "strategy_id": strategy_id, "message": "Strategy start initiated"}
+                return {
+                    "status": "starting",
+                    "strategy_id": strategy_id,
+                    "message": "Strategy start initiated",
+                    "imported_positions": imported,
+                }
 
             if command.action == "stop":
                 await self.engine.stop()
-                await self._mark_session_stopped()
+                stopped_count = await self._mark_session_stopped()
                 await self.session.commit()
                 logger.info(
                     "Strategy stop dispatched",
                     extra={"event": "strategy_stop"},
                 )
-                return {"status": "stopping", "message": "Stop signal dispatched"}
+                return {
+                    "status": "stopping",
+                    "message": "Stop signal dispatched",
+                    "stopped_sessions": stopped_count,
+                }
 
             if command.action == "restart":
                 await self.engine.stop()
+                await self._mark_session_stopped()
                 session = await self._create_session(config)
+                imported = await self._backfill_exchange_state(session)
                 strategy_id = await self.engine.start(session, config)
                 await self.session.commit()
                 logger.info(
@@ -87,7 +100,12 @@ class TradingService:
                         "session_id": session.id,
                     },
                 )
-                return {"status": "restarting", "strategy_id": strategy_id, "message": "Strategy restart initiated"}
+                return {
+                    "status": "restarting",
+                    "strategy_id": strategy_id,
+                    "message": "Strategy restart initiated",
+                    "imported_positions": imported,
+                }
 
             if command.action == "panic":
                 strategy_id = await self.engine.panic_close()
@@ -197,6 +215,275 @@ class TradingService:
         result = await self.session.execute(select(StrategySession))
         return list(result.scalars().all())
 
+    async def cleanup_sessions(self) -> int:
+        stopped = await self._mark_session_stopped()
+        if stopped:
+            await self.session.commit()
+        else:
+            await self.session.flush()
+        return stopped
+
+    async def _backfill_exchange_state(self, session: StrategySession) -> int:
+        client = DeltaExchangeClient()
+        if not client.has_credentials:
+            logger.info(
+                "Skipping exchange backfill due to missing credentials",
+                extra={
+                    "event": "exchange_backfill_skipped",
+                    "reason": "missing_credentials",
+                    "strategy_id": session.strategy_id,
+                },
+            )
+            await client.close()
+            return 0
+        try:
+            positions_response = await client.get_positions()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to fetch positions for backfill",
+                extra={
+                    "event": "exchange_backfill_failed",
+                    "strategy_id": session.strategy_id,
+                },
+            )
+            await client.close()
+            return 0
+
+        data = positions_response.get("result") or positions_response.get("data") or []
+        if isinstance(data, dict):
+            positions_iterable = data.get("positions") or []
+        else:
+            positions_iterable = data
+
+        imported = 0
+        legs_summary: list[dict[str, Any]] = []
+        orders_summary: list[dict[str, Any]] = []
+        totals = {
+            "realized": 0.0,
+            "unrealized": 0.0,
+            "total_pnl": 0.0,
+            "notional": 0.0,
+            "total_pnl_pct": 0.0,
+        }
+        for entry in positions_iterable:
+            raw_symbol = entry.get("symbol") or entry.get("market_symbol")
+            if not raw_symbol:
+                continue
+
+            try:
+                quantity = float(entry.get("size") or entry.get("quantity") or 0)
+            except (TypeError, ValueError):
+                quantity = 0.0
+            if quantity == 0:
+                continue
+
+            side = entry.get("side") or entry.get("direction") or ""
+            entry_price = entry.get("entry_price") or entry.get("price") or entry.get("average_price")
+            mark_price = entry.get("mark_price") or entry.get("current_price")
+            entry_time = entry.get("entry_time") or entry.get("created_at")
+            realized_raw = entry.get("realized_pnl") or entry.get("realized")
+            unrealized_raw = entry.get("unrealized_pnl") or entry.get("pnl")
+            contract_size_raw = entry.get("contract_size") or entry.get("contract_value")
+            notional_raw = entry.get("notional") or entry.get("value")
+            order_id_raw = (
+                entry.get("entry_order_id")
+                or entry.get("order_id")
+                or entry.get("last_order_id")
+                or entry.get("id")
+            )
+            order_status_raw = entry.get("status") or entry.get("order_status")
+
+            order_id = str(order_id_raw) if order_id_raw else f"backfill-{session.id}-{imported + 1}"
+
+            try:
+                realized_pnl = float(realized_raw or 0.0)
+            except (TypeError, ValueError):
+                realized_pnl = 0.0
+            try:
+                unrealized_pnl = float(unrealized_raw or 0.0)
+            except (TypeError, ValueError):
+                unrealized_pnl = 0.0
+            try:
+                contract_size = float(contract_size_raw or 1.0)
+            except (TypeError, ValueError):
+                contract_size = 1.0
+
+            entry_dt = self._coerce_datetime(entry_time)
+
+            position = PositionLedger(
+                session_id=session.id,
+                symbol=raw_symbol,
+                side=str(side).lower(),
+                entry_price=float(entry_price or 0.0),
+                exit_price=None,
+                quantity=quantity,
+                realized_pnl=realized_pnl,
+                unrealized_pnl=unrealized_pnl,
+                entry_time=entry_dt,
+                exit_time=None,
+                trailing_sl_state=None,
+                analytics={
+                    "mark_price": float(mark_price or 0.0),
+                    "notional": notional_raw,
+                    "contract_size": contract_size_raw,
+                    "delta_exchange_snapshot": entry,
+                },
+            )
+            session.positions.append(position)
+
+            notional = 0.0
+            try:
+                notional = float(notional_raw or 0.0)
+            except (TypeError, ValueError):
+                notional = 0.0
+            if notional == 0.0:
+                base_price = float(mark_price or entry_price or 0.0)
+                notional = abs(quantity) * abs(base_price) * contract_size
+
+            leg_pnl_total = realized_pnl + unrealized_pnl
+            leg_pct = (leg_pnl_total / notional * 100.0) if notional else 0.0
+            entry_dt_iso = entry_dt.isoformat() if entry_dt else None
+
+            legs_summary.append(
+                {
+                    "symbol": raw_symbol,
+                    "side": str(side).lower(),
+                    "quantity": quantity,
+                    "entry_price": float(entry_price or 0.0),
+                    "exit_price": None,
+                    "realized_pnl": realized_pnl,
+                    "unrealized_pnl": unrealized_pnl,
+                    "pnl_pct": leg_pct,
+                    "notional": notional,
+                    "contract_size": contract_size,
+                    "entry_time": entry_dt_iso,
+                    "exit_time": None,
+                }
+            )
+
+            totals["realized"] += realized_pnl
+            totals["unrealized"] += unrealized_pnl
+            totals["notional"] += notional
+
+            try:
+                order_price = float(entry_price or mark_price or 0.0)
+            except (TypeError, ValueError):
+                order_price = 0.0
+
+            order = OrderLedger(
+                session_id=session.id,
+                order_id=order_id,
+                symbol=raw_symbol,
+                side=str(side).lower(),
+                quantity=quantity,
+                price=order_price,
+                fill_price=order_price,
+                status=str(order_status_raw or "filled"),
+                raw_response=entry,
+            )
+            if entry_dt is not None:
+                order.created_at = entry_dt
+            order.session = session
+            self.session.add(order)
+
+            orders_summary.append(
+                {
+                    "order_id": order_id,
+                    "symbol": raw_symbol,
+                    "side": str(side).lower(),
+                    "quantity": quantity,
+                    "price": order_price,
+                    "fill_price": order_price,
+                    "status": order_status_raw or "filled",
+                    "created_at": entry_dt_iso,
+                }
+            )
+
+            imported += 1
+
+        if imported:
+            totals["total_pnl"] = totals["realized"] + totals["unrealized"]
+            totals["total_pnl_pct"] = (
+                (totals["total_pnl"] / totals["notional"]) * 100.0 if totals["notional"] else 0.0
+            )
+
+            generated_at = datetime.now(timezone.utc).isoformat()
+            metadata = dict(session.session_metadata or {})
+            metadata["legs_summary"] = legs_summary
+            metadata["orders_summary"] = orders_summary
+
+            runtime_meta = dict(metadata.get("runtime") or {})
+            monitor_meta = dict(runtime_meta.get("monitor") or {})
+            monitor_meta.update(
+                {
+                    "generated_at": generated_at,
+                    "legs": legs_summary,
+                    "positions": legs_summary,
+                    "totals": totals,
+                    "orders": orders_summary,
+                }
+            )
+            runtime_meta["monitor"] = monitor_meta
+            metadata["runtime"] = runtime_meta
+
+            summary_meta = dict(metadata.get("summary") or {})
+            summary_meta.setdefault("generated_at", generated_at)
+            summary_meta.setdefault(
+                "trailing",
+                {
+                    "max_profit_seen": 0.0,
+                    "max_profit_seen_pct": 0.0,
+                    "trailing_level_pct": 0.0,
+                    "enabled": False,
+                },
+            )
+            summary_meta["legs"] = legs_summary
+            summary_meta["totals"] = totals
+            summary_meta["orders"] = orders_summary
+            metadata["summary"] = summary_meta
+
+            session.session_metadata = metadata
+            session.pnl_summary = {
+                "realized": totals["realized"],
+                "unrealized": totals["unrealized"],
+                "total": totals["total_pnl"],
+                "total_pnl": totals["total_pnl"],
+                "notional": totals["notional"],
+                "total_pnl_pct": totals["total_pnl_pct"],
+                "generated_at": generated_at,
+            }
+
+            logger.info(
+                "Backfilled positions into session",
+                extra={
+                    "event": "exchange_backfill_complete",
+                    "strategy_id": session.strategy_id,
+                    "imported_positions": imported,
+                },
+            )
+
+        await client.close()
+        return imported
+
+    def _coerce_datetime(self, raw: Any) -> datetime | None:
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            if raw.tzinfo is None:
+                return raw.replace(tzinfo=timezone.utc)
+            return raw.astimezone(timezone.utc)
+        if isinstance(raw, str):
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            else:
+                parsed = parsed.astimezone(timezone.utc)
+            return parsed
+        return None
+
     async def _create_session(self, config: TradingConfiguration) -> StrategySession:
         strategy_id = f"delta-strangle-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
         session = StrategySession(
@@ -221,16 +508,30 @@ class TradingService:
         )
         return session
 
-    async def _mark_session_stopped(self) -> None:
-        stmt = select(StrategySession).order_by(StrategySession.activated_at.desc())
+    async def _mark_session_stopped(self) -> int:
+        stmt = (
+            select(StrategySession)
+            .where(StrategySession.status == "running")
+            .order_by(StrategySession.activated_at.desc())
+        )
         result = await self.session.execute(stmt)
-        session = result.scalars().first()
-        if session:
-            if session.status != "stopped":
+        sessions = list(result.scalars().all())
+        if not sessions:
+            return 0
+
+        stopped_count = 0
+        for session in sessions:
+            status_changed = session.status != "stopped"
+            if status_changed:
                 session.status = "stopped"
-            session.deactivated_at = session.deactivated_at or datetime.utcnow()
-            await self._capture_analytics_snapshot(session)
-            await self.session.flush()
+            if session.deactivated_at is None:
+                session.deactivated_at = datetime.utcnow()
+                status_changed = True
+
+            if status_changed:
+                await self._capture_analytics_snapshot(session)
+                stopped_count += 1
+
             logger.info(
                 "Marked session stopped",
                 extra={
@@ -239,6 +540,9 @@ class TradingService:
                     "strategy_id": session.strategy_id,
                 },
             )
+
+        await self.session.flush()
+        return stopped_count
 
     def _config_snapshot(self, config: TradingConfiguration) -> dict:
         mapper = config.__mapper__

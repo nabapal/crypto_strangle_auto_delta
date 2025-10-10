@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncConnection
 
 # Configure an isolated SQLite database for tests before importing the shared engine
@@ -56,15 +57,20 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 @pytest_asyncio.fixture()
 async def test_user(db_session: AsyncSession) -> User:
-    user = User(
-        email="tester@example.com",
-        hashed_password=get_password_hash("secret-test"),
-        is_active=True,
-        is_superuser=True,
-    )
-    db_session.add(user)
-    await db_session.commit()
-    await db_session.refresh(user)
+    result = await db_session.execute(select(User).where(User.email == "tester@example.com"))
+    user = result.scalars().first()
+    if not user:
+        user = User(
+            email="tester@example.com",
+            hashed_password=get_password_hash("secret-test"),
+            is_active=True,
+            is_superuser=True,
+        )
+        db_session.add(user)
+        await db_session.commit()
+        await db_session.refresh(user)
+    else:
+        await db_session.refresh(user)
     return user
 
 
