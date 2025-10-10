@@ -2,6 +2,8 @@ import axios, { AxiosHeaders } from "axios";
 import type { AxiosError, AxiosRequestConfig } from "axios";
 
 import logger, { logAxiosError } from "../utils/logger";
+import { clearToken, getToken } from "../utils/authStorage";
+import { emitLogout } from "../utils/authEvents";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/$/, "");
 const enableDebug = String(import.meta.env.VITE_ENABLE_API_DEBUG ?? "false").toLowerCase() === "true";
@@ -91,6 +93,15 @@ client.interceptors.request.use((config) => {
     }
   }
 
+  const token = getToken();
+  if (token) {
+    if (config.headers instanceof AxiosHeaders) {
+      config.headers.set("Authorization", `Bearer ${token}`);
+    } else {
+  (config.headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+    }
+  }
+
   const payloadSummary = summarizePayload(config.data);
 
   logger.debug("API request dispatched", {
@@ -154,6 +165,11 @@ client.interceptors.response.use(
       url,
       duration_ms: durationMs
     });
+
+    if (error.response?.status === 401) {
+      clearToken();
+      emitLogout();
+    }
 
     return Promise.reject(error);
   }

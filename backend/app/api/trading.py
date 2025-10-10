@@ -16,9 +16,13 @@ from ..schemas.trading import (
     TradingControlResponse,
 )
 from ..services.trading_service import TradingService
-from .deps import get_db_session
+from .deps import get_current_active_user, get_db_session
 
-router = APIRouter(prefix="/trading", tags=["trading"])
+router = APIRouter(
+    prefix="/trading",
+    tags=["trading"],
+    dependencies=[Depends(get_current_active_user)],
+)
 
 
 def _safe_metadata(session_obj: StrategySession) -> dict[str, Any]:

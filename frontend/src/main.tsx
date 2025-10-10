@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "antd/dist/reset.css";
 import "./styles.css";
 
-import Dashboard from "./pages/Dashboard";
+import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import logger from "./utils/logger";
 
@@ -23,7 +23,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <QueryClientProvider client={queryClient}>
         <AntApp>
           <ErrorBoundary>
-            <Dashboard />
+            <App />
           </ErrorBoundary>
         </AntApp>
       </QueryClientProvider>

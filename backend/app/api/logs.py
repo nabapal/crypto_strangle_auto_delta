@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.config import get_settings
 from ..models import BackendLogEntry, FrontendLogEntry
 from ..schemas.logging import BackendLogPage, BackendLogRecord, FrontendLogBatch
-from .deps import get_db_session
+from .deps import get_current_active_user, get_db_session
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
@@ -101,6 +101,7 @@ async def list_backend_logs(
     start_time: datetime | None = Query(None, alias="startTime"),
     end_time: datetime | None = Query(None, alias="endTime"),
     session: AsyncSession = Depends(get_db_session),
+    _: None = Depends(get_current_active_user),
 ) -> BackendLogPage:
     filters = []
 

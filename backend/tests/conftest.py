@@ -16,6 +16,8 @@ TEST_DB_PATH = DATA_DIR / "delta_trader_test.db"
 os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{TEST_DB_PATH}")
 
 from app.core.database import Base, async_session, engine
+from app.core.security import create_access_token, get_password_hash
+from app.models import User
 
 
 @pytest.fixture(scope="session")
@@ -50,3 +52,23 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
         yield session
         await session.rollback()
+
+
+@pytest_asyncio.fixture()
+async def test_user(db_session: AsyncSession) -> User:
+    user = User(
+        email="tester@example.com",
+        hashed_password=get_password_hash("secret-test"),
+        is_active=True,
+        is_superuser=True,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest.fixture()
+def auth_headers(test_user: User) -> dict[str, str]:
+    token = create_access_token(str(test_user.id))
+    return {"Authorization": f"Bearer {token}"}

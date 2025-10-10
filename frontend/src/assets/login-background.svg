@@ -1,0 +1,66 @@
+<svg width="1920" height="1080" viewBox="0 0 1920 1080" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="radialGlow" cx="50%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.95" />
+      <stop offset="45%" stop-color="#1d4ed8" stop-opacity="0.55" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="deepSpace" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#020617" />
+      <stop offset="40%" stop-color="#0b1120" />
+      <stop offset="100%" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="gridLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="arcStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fde68a" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#f97316" stop-opacity="0.2" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#deepSpace)" />
+
+  <g opacity="0.6" filter="url(#blurGlow)">
+    <circle cx="420" cy="280" r="420" fill="url(#radialGlow)" />
+  </g>
+
+  <g opacity="0.45">
+    <path d="M-100 820C220 680 460 680 780 820C1100 960 1340 960 1660 820C1980 680 2220 680 2540 820" stroke="#38bdf8" stroke-width="1.5" stroke-opacity="0.25" />
+    <path d="M-120 910C200 770 440 770 760 910C1080 1050 1320 1050 1640 910C1960 770 2200 770 2520 910" stroke="#38bdf8" stroke-width="1.5" stroke-opacity="0.18" />
+  </g>
+
+  <g opacity="0.28">
+    <path d="M420 -200C520 -20 640 120 820 220C1000 320 1220 380 1460 360" stroke="url(#arcStroke)" stroke-width="2.6" />
+    <path d="M320 -120C420 60 560 200 760 300C960 400 1180 440 1420 420" stroke="url(#arcStroke)" stroke-width="1.8" opacity="0.75" />
+  </g>
+
+  <g opacity="0.4">
+    <g transform="translate(0, 140)">
+      <rect x="0" y="0" width="1920" height="1" fill="url(#gridLine)" opacity="0.4" />
+      <rect x="0" y="200" width="1920" height="1" fill="url(#gridLine)" opacity="0.25" />
+      <rect x="0" y="400" width="1920" height="1" fill="url(#gridLine)" opacity="0.2" />
+      <rect x="0" y="600" width="1920" height="1" fill="url(#gridLine)" opacity="0.15" />
+    </g>
+    <g transform="translate(0, 140)">
+      <rect x="100" y="0" width="1" height="800" fill="url(#gridLine)" opacity="0.3" />
+      <rect x="430" y="0" width="1" height="800" fill="url(#gridLine)" opacity="0.25" />
+      <rect x="760" y="0" width="1" height="800" fill="url(#gridLine)" opacity="0.17" />
+      <rect x="1090" y="0" width="1" height="800" fill="url(#gridLine)" opacity="0.12" />
+      <rect x="1420" y="0" width="1" height="800" fill="url(#gridLine)" opacity="0.08" />
+      <rect x="1750" y="0" width="1" height="800" fill="url(#gridLine)" opacity="0.05" />
+    </g>
+  </g>
+
+  <g opacity="0.6">
+    <circle cx="1520" cy="220" r="140" fill="#22d3ee" fill-opacity="0.12" />
+    <circle cx="1480" cy="260" r="90" fill="#e0f2fe" fill-opacity="0.12" />
+    <circle cx="1510" cy="260" r="54" fill="#22d3ee" fill-opacity="0.4" />
+  </g>
+
+  <g opacity="0.32">
+    <path d="M1260 180C1300 210 1340 260 1350 320C1360 380 1330 440 1280 470" stroke="#f97316" stroke-width="1.6" />
+    <path d="M1290 240C1315 260 1335 290 1340 320C1345 350 1330 380 1305 398" stroke="#fde68a" stroke-width="1.2" />
+  </g>
+</svg>

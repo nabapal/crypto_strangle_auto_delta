@@ -8,9 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import TradingConfiguration
 from ..schemas.config import ConfigurationListResponse, TradingConfigPayload, TradingConfigResponse
 from ..services.config_service import ConfigService
-from .deps import get_db_session
+from .deps import get_current_active_user, get_db_session
 
-router = APIRouter(prefix="/configs", tags=["configuration"])
+router = APIRouter(
+    prefix="/configs",
+    tags=["configuration"],
+    dependencies=[Depends(get_current_active_user)],
+)
 
 
 def _normalize_percent(value: float | None) -> float:

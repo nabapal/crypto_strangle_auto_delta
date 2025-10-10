@@ -7,7 +7,7 @@ from app.models import OrderLedger, PositionLedger, StrategySession
 
 
 @pytest.mark.asyncio
-async def test_get_session_detail_returns_related_entities(db_session):
+async def test_get_session_detail_returns_related_entities(db_session, auth_headers):
     now = datetime.now(timezone.utc)
     session_record = StrategySession(
         strategy_id="detail-strategy",
@@ -48,7 +48,7 @@ async def test_get_session_detail_returns_related_entities(db_session):
     await db_session.commit()
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=auth_headers) as client:
         response = await client.get(f"/api/trading/sessions/{session_record.id}")
 
     assert response.status_code == 200

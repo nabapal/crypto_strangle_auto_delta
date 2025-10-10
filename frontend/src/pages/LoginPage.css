@@ -1,0 +1,50 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background-color: #020617;
+  background-image: url("../assets/login-background.svg"), radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.18), transparent 55%), radial-gradient(circle at 80% 10%, rgba(249, 115, 22, 0.22), transparent 60%);
+  background-size: cover, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+  box-sizing: border-box;
+}
+
+.login-page__card {
+  width: 100%;
+  max-width: 440px;
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 30px 60px rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(14px);
+}
+
+.login-page__header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.login-page__welcome-title {
+  margin-bottom: 6px !important;
+  color: #e2e8f0 !important;
+}
+
+.login-page__subtitle {
+  color: rgba(226, 232, 240, 0.82);
+}
+
+@media (max-width: 640px) {
+  .login-page {
+    padding: 16px;
+    background-position: right center;
+    background-size: cover;
+  }
+
+  .login-page__card {
+    border-radius: 16px;
+    box-shadow: 0 16px 40px rgba(2, 6, 23, 0.48);
+  }
+}

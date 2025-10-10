@@ -9,6 +9,7 @@ from .trading import (
     TradingControlRequest,
     TradingControlResponse,
 )
+from .user import AuthResponse, Token, TokenPayload, UserCreate, UserLogin, UserRead
 
 __all__ = [
     "ConfigurationListResponse",
@@ -22,4 +23,10 @@ __all__ = [
     "StrategySessionSummary",
     "TradingControlRequest",
     "TradingControlResponse",
+    "AuthResponse",
+    "Token",
+    "TokenPayload",
+    "UserCreate",
+    "UserLogin",
+    "UserRead",
 ]

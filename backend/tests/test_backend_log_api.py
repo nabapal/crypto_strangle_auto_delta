@@ -14,7 +14,7 @@ from app.models import BackendLogEntry
 
 
 @pytest.mark.asyncio
-async def test_backend_logs_endpoint_filters_and_pagination(monkeypatch):
+async def test_backend_logs_endpoint_filters_and_pagination(monkeypatch, auth_headers):
     monkeypatch.setenv("BACKEND_LOG_INGEST_ENABLED", "false")
     monkeypatch.setenv("BACKEND_LOG_RETENTION_DAYS", "0")
     get_settings.cache_clear()  # type: ignore[attr-defined]
@@ -58,7 +58,7 @@ async def test_backend_logs_endpoint_filters_and_pagination(monkeypatch):
         await session.commit()
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url="http://testserver", headers=auth_headers) as client:
         # Basic pagination and ordering (newest first)
         response = await client.get("/api/logs/backend", params={"page_size": 1})
         assert response.status_code == 200

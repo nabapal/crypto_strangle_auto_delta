@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     delta_debug_max_body_bytes: int = 2048
     delta_live_trading: bool = False
 
+    # Authentication
+    jwt_secret_key: str = "change-me"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60
+    initial_superuser_email: str | None = None
+    initial_superuser_password: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

@@ -7,10 +7,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from .api import analytics, configurations, logs, trading
+from .api import analytics, auth, configurations, logs, trading
 from .core.config import get_settings
 from .core.database import Base, async_session, engine
 from .middleware.request_logging import RequestResponseLoggingMiddleware
+from .services.auth_service import AuthService
 from .services.log_retention_service import BackendLogRetentionService
 from .services.log_tail_service import BackendLogTailService
 from .services.logging_utils import configure_logging
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
     )
 
+    application.include_router(auth.router, prefix=settings.api_prefix)
     application.include_router(configurations.router, prefix=settings.api_prefix)
     application.include_router(trading.router, prefix=settings.api_prefix)
     application.include_router(analytics.router, prefix=settings.api_prefix)
@@ -51,6 +53,14 @@ def create_app() -> FastAPI:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schema ensured")
+
+        if settings.initial_superuser_email and settings.initial_superuser_password:
+            async with async_session() as session:
+                service = AuthService(session)
+                await service.ensure_initial_superuser(
+                    settings.initial_superuser_email,
+                    settings.initial_superuser_password,
+                )
 
         if settings.backend_log_ingest_enabled:
             log_path = Path(settings.backend_log_path)

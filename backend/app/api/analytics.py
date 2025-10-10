@@ -5,9 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..schemas.trading import AnalyticsResponse
 from ..services.analytics_service import AnalyticsService
-from .deps import get_db_session
+from .deps import get_current_active_user, get_db_session
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(
+    prefix="/analytics",
+    tags=["analytics"],
+    dependencies=[Depends(get_current_active_user)],
+)
 
 
 @router.get("/dashboard", response_model=AnalyticsResponse)
