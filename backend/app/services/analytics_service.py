@@ -73,7 +73,7 @@ class AnalyticsService:
             AnalyticsKpi(label="Unrealized PnL", value=total_unrealized, unit="USD"),
         ]
         return AnalyticsResponse(
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             kpis=kpis,
             chart_data={"pnl": [], "realized": [], "unrealized": []},
         )
@@ -171,13 +171,17 @@ class AnalyticsService:
             totals.setdefault("total_pnl", totals["realized"] + totals["unrealized"])
 
             generated_at_raw = summary_meta.get("generated_at") or totals_meta.get("generated_at")
-            generated_at = datetime.utcnow()
+            generated_at = datetime.now(timezone.utc)
             if isinstance(generated_at_raw, str):
                 sanitized = generated_at_raw.replace("Z", "+00:00")
                 try:
                     generated_at = datetime.fromisoformat(sanitized)
                 except ValueError:
                     pass
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=timezone.utc)
+            else:
+                generated_at = generated_at.astimezone(timezone.utc)
 
             trailing_meta = summary_meta.get("trailing")
             if not isinstance(trailing_meta, dict):

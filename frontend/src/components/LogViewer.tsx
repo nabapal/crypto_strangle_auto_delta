@@ -73,7 +73,9 @@ export default function LogViewer() {
   const { data, isLoading, isFetching, refetch: refetchLogs } = query;
 
   const summaryFilters = useMemo(() => {
-    const { page, pageSize, ...rest } = filters;
+    const rest = { ...filters };
+    delete rest.page;
+    delete rest.pageSize;
     return rest;
   }, [filters]);
 

@@ -93,3 +93,17 @@ async def test_backfill_exchange_state_imports_positions(monkeypatch, db_session
     order_summary = metadata["orders_summary"][0]
     assert order_summary["order_id"] == "order-123"
     assert order_summary["created_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_create_session_uses_timezone_aware_timestamp(db_session):
+    config = TradingConfiguration(name="Timezone Session")
+    db_session.add(config)
+    await db_session.flush()
+
+    service = TradingService(db_session)
+    session = await service._create_session(config)
+
+    assert session.activated_at is not None
+    assert session.activated_at.tzinfo is timezone.utc
+    assert session.strategy_id.startswith("delta-strangle-")

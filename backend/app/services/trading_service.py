@@ -516,11 +516,11 @@ class TradingService:
         return None
 
     async def _create_session(self, config: TradingConfiguration) -> StrategySession:
-        strategy_id = f"delta-strangle-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        strategy_id = f"delta-strangle-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         session = StrategySession(
             strategy_id=strategy_id,
             status="running",
-            activated_at=datetime.utcnow(),
+            activated_at=datetime.now(timezone.utc),
             config_snapshot=self._config_snapshot(config),
             session_metadata=self._session_metadata(config),
         )
@@ -556,7 +556,7 @@ class TradingService:
             if status_changed:
                 session.status = "stopped"
             if session.deactivated_at is None:
-                session.deactivated_at = datetime.utcnow()
+                session.deactivated_at = datetime.now(timezone.utc)
                 status_changed = True
 
             if status_changed:

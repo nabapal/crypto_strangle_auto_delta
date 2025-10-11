@@ -129,7 +129,7 @@ async def test_trading_engine_panic_close_forces_exit():
     session = StrategySession(
         strategy_id="panic-strategy",
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     session.positions.append(
@@ -141,7 +141,7 @@ async def test_trading_engine_panic_close_forces_exit():
             quantity=1.0,
             realized_pnl=0.0,
             unrealized_pnl=5.0,
-            entry_time=datetime.utcnow(),
+            entry_time=datetime.now(timezone.utc),
             exit_time=None,
             trailing_sl_state=None,
             analytics={},
@@ -208,7 +208,7 @@ async def test_refresh_position_analytics_uses_ticker_quotes():
     session = StrategySession(
         strategy_id="l1-strategy",
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     session.positions.append(
@@ -220,7 +220,7 @@ async def test_refresh_position_analytics_uses_ticker_quotes():
             quantity=-1.0,
             realized_pnl=0.0,
             unrealized_pnl=0.0,
-            entry_time=datetime.utcnow(),
+            entry_time=datetime.now(timezone.utc),
             exit_time=None,
             trailing_sl_state=None,
             analytics={},
@@ -505,13 +505,13 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
     session = StrategySession(
         strategy_id="runtime-strategy",
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     session.id = 42
     engine = TradingEngine()
     state = StrategyRuntimeState(strategy_id="runtime-strategy", config=config, session=session)
-    state.scheduled_entry_at = datetime.utcnow()
+    state.scheduled_entry_at = datetime.now(timezone.utc)
     state.entry_summary = {"status": "live", "mode": "simulation"}
     state.active = True
     state.trailing_level = 0.15
@@ -523,7 +523,7 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
     state.spot_last_price = 63010.5
     state.spot_high_price = 63120.0
     state.spot_low_price = 62500.0
-    snapshot_timestamp = datetime.utcnow().isoformat()
+    snapshot_timestamp = datetime.now(timezone.utc).isoformat()
     state.last_monitor_snapshot = {
         "generated_at": snapshot_timestamp,
         "positions": [
@@ -535,7 +535,7 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
             }
         ],
         "totals": {"realized": 0.0, "unrealized": 25.0, "total_pnl": 25.0},
-        "planned_exit_at": datetime.utcnow().isoformat(),
+    "planned_exit_at": datetime.now(timezone.utc).isoformat(),
         "time_to_exit_seconds": 3600.0,
         "trailing": {
             "level": 0.15,
@@ -573,7 +573,7 @@ async def test_refresh_spot_state_updates_runtime_metadata():
     session = StrategySession(
         strategy_id="spot-strategy",
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     engine = TradingEngine()
@@ -599,7 +599,7 @@ def test_update_trailing_state_persists_drawdown_metadata():
     session = StrategySession(
         strategy_id="trail-strategy",
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     engine = TradingEngine()
@@ -624,7 +624,7 @@ async def test_trading_service_runtime_snapshot_skips_stale_metadata(db_session)
     session = StrategySession(
         strategy_id="runtime-service",
         status="stopped",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
         session_metadata={
             "runtime": {
@@ -666,7 +666,7 @@ async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(d
     session = StrategySession(
         strategy_id="runtime-service-running",
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
         session_metadata={
             "runtime": {
@@ -770,7 +770,7 @@ async def test_limit_order_uses_best_ask_for_buy():
         delta=0.12,
         strike_price=95000,
         expiry="310125",
-        expiry_date=datetime.utcnow().date(),
+    expiry_date=datetime.now(timezone.utc).date(),
         best_bid=1249.8,
         best_ask=1250.5,
         mark_price=1250.0,
@@ -826,7 +826,7 @@ async def test_limit_order_uses_best_bid_for_sell():
         delta=0.12,
         strike_price=95000,
         expiry="310125",
-        expiry_date=datetime.utcnow().date(),
+    expiry_date=datetime.now(timezone.utc).date(),
         best_bid=1249.8,
         best_ask=1250.5,
         mark_price=1250.0,
@@ -896,7 +896,7 @@ def test_compute_exit_time_rolls_to_next_day(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_record_session_snapshot_persists_metrics(db_session):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     summary_payload = {
         "generated_at": now.isoformat(),
         "exit_reason": "max_profit",
@@ -950,7 +950,7 @@ async def test_record_session_snapshot_persists_metrics(db_session):
     assert snapshot.kpis[0]["label"] == "Realized PnL"
     assert snapshot.kpis[0]["value"] == pytest.approx(10.0)
     assert snapshot.chart_data["pnl"][0]["pnl"] == pytest.approx(10.0)
-    expected_ts = now.replace(tzinfo=timezone.utc).timestamp()
+    expected_ts = now.timestamp()
     assert snapshot.chart_data["pnl"][0]["timestamp"] == pytest.approx(expected_ts)
 
 
@@ -960,7 +960,7 @@ def test_client_order_id_truncates_strategy_prefix():
     session = StrategySession(
         strategy_id=long_strategy_id,
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     engine = TradingEngine()
@@ -980,7 +980,7 @@ def test_client_order_id_handles_extreme_strategy_length():
     session = StrategySession(
         strategy_id=long_strategy_id,
         status="running",
-        activated_at=datetime.utcnow(),
+    activated_at=datetime.now(timezone.utc),
         config_snapshot={},
     )
     engine = TradingEngine()

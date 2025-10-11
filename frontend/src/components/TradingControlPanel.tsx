@@ -35,8 +35,8 @@ import {
   fetchTradingSessions
 } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
-import useDeltaSpotPrice from "../hooks/useDeltaSpotPrice";
 import logger from "../utils/logger";
+import { useSpotPriceContext } from "../context/SpotPriceContext";
 
 const { Title, Text } = Typography;
 
@@ -297,7 +297,8 @@ export default function TradingControlPanel() {
   const backendSpot = runtime?.spot ?? null;
   const modeTagColor = runtime?.mode === "live" ? "green" : runtime?.mode === "simulation" ? "orange" : "default";
 
-  const { price: spotPrice, lastUpdated: spotUpdatedAt, isConnected: spotConnected, error: spotError } = useDeltaSpotPrice();
+  const { price: spotPrice, lastUpdated: spotUpdatedAt, isConnected: spotConnected, error: spotError } =
+    useSpotPriceContext();
   const spotUpdateRef = useRef<number | null>(null);
   const spotConnectionRef = useRef<boolean | null>(null);
   const spotErrorRef = useRef<string | null>(null);

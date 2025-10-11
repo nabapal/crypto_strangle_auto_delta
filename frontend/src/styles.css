@@ -9,6 +9,10 @@
   --layout-header-button-bg: rgba(14, 116, 144, 0.12);
   --layout-header-button-shadow: 0 12px 24px rgba(14, 116, 144, 0.25);
   --layout-header-avatar-bg: rgba(14, 116, 144, 0.18);
+  --profile-alert-bg: rgba(239, 68, 68, 0.16);
+  --profile-alert-avatar-bg: rgba(239, 68, 68, 0.24);
+  --profile-alert-text: #b91c1c;
+  --profile-alert-shadow: 0 16px 32px rgba(239, 68, 68, 0.2);
   --layout-timechip-bg: rgba(14, 116, 144, 0.1);
   --layout-timechip-border: rgba(14, 116, 144, 0.2);
   --layout-timechip-text: #0f172a;
@@ -31,6 +35,10 @@
   --layout-header-button-bg: rgba(15, 23, 42, 0.72);
   --layout-header-button-shadow: 0 16px 30px rgba(2, 6, 23, 0.65);
   --layout-header-avatar-bg: rgba(56, 189, 248, 0.25);
+  --profile-alert-bg: rgba(239, 68, 68, 0.28);
+  --profile-alert-avatar-bg: rgba(239, 68, 68, 0.38);
+  --profile-alert-text: #fca5a5;
+  --profile-alert-shadow: 0 20px 38px rgba(239, 68, 68, 0.35);
   --layout-timechip-bg: rgba(56, 189, 248, 0.12);
   --layout-timechip-border: rgba(56, 189, 248, 0.24);
   --layout-timechip-text: #e2e8f0;
@@ -60,4 +68,16 @@ body {
 
 .config-row-active td {
   background: var(--table-row-active-bg) !important;
+}
+
+.profile-button {
+  transition: background 0.3s ease, box-shadow 0.3s ease, color 0.3s ease;
+}
+
+.profile-button .ant-avatar {
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.profile-button--stale .ant-avatar {
+  font-weight: 600;
 }

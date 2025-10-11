@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Avatar, Button, Dropdown, Layout, Space, Spin, Tabs, Tooltip, Typography } from "antd";
+import { Avatar, Button, Dropdown, Layout, Space, Spin, Tabs, Typography } from "antd";
 import type { MenuProps } from "antd";
 
 const ConfigPanel = lazy(() => import("../components/ConfigPanel"));
@@ -12,20 +12,72 @@ import { BellOutlined, LockOutlined, LogoutOutlined, UserOutlined } from "@ant-d
 
 import logger from "../utils/logger";
 import { useAuth } from "../context/AuthContext";
+import { SpotPriceProvider, useSpotPriceContext } from "../context/SpotPriceContext";
 import ThemeToggle from "../components/ThemeToggle";
 import TimeDisplay from "../components/TimeDisplay";
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
 
-export default function Dashboard() {
+export default function Dashboard(): JSX.Element {
+  return (
+    <SpotPriceProvider>
+      <DashboardInner />
+    </SpotPriceProvider>
+  );
+}
+
+function DashboardInner(): JSX.Element {
   const { user, logout } = useAuth();
+  const { lastUpdated: spotLastUpdated, isConnected: spotConnected, mountedAt } = useSpotPriceContext();
 
   useEffect(() => {
     logger.info("Dashboard rendered", {
       event: "ui_dashboard_loaded"
     });
   }, []);
+
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowMs(Date.now()), 5000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const lastUpdatedMs = spotLastUpdated?.getTime() ?? null;
+  useEffect(() => {
+    if (lastUpdatedMs !== null) {
+      setNowMs(Date.now());
+    }
+  }, [lastUpdatedMs]);
+
+  const referenceMs = lastUpdatedMs ?? mountedAt;
+  const ageMs = Math.max(nowMs - referenceMs, 0);
+  const staleThresholdMs = 60_000;
+  const isStale = ageMs >= staleThresholdMs;
+  const staleSeconds = ageMs / 1000;
+
+  const staleLogRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const previous = staleLogRef.current;
+    if (previous !== isStale) {
+      staleLogRef.current = isStale;
+      if (isStale) {
+        logger.warn("Spot price updates stale", {
+          event: "ui_spot_price_stale",
+          age_seconds: staleSeconds,
+          last_updated: spotLastUpdated ? spotLastUpdated.toISOString() : null,
+          connected: spotConnected
+        });
+      } else if (previous !== null) {
+        logger.info("Spot price freshness restored", {
+          event: "ui_spot_price_stale_cleared",
+          age_seconds: staleSeconds,
+          last_updated: spotLastUpdated ? spotLastUpdated.toISOString() : null,
+          connected: spotConnected
+        });
+      }
+    }
+  }, [isStale, spotConnected, spotLastUpdated, staleSeconds]);
 
   const tabItems = useMemo(
     () => [
@@ -90,16 +142,17 @@ export default function Dashboard() {
   }, [logout]);
 
   const displayName = user?.full_name || user?.email || "Account";
-  const emailLabel = user?.email || "(no email)";
   const initials = useMemo(() => {
     const source = user?.full_name?.trim() || user?.email || "DS";
-    return source
-      .split(/[\s@.]+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join("")
-      .slice(0, 2) || "DS";
+    return (
+      source
+        .split(/[\s@.]+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase())
+        .join("")
+        .slice(0, 2) || "DS"
+    );
   }, [user?.email, user?.full_name]);
 
   const accountMenuItems = useMemo<MenuProps["items"]>(() => {
@@ -137,14 +190,34 @@ export default function Dashboard() {
     return items;
   }, [handleLogout]);
 
-  const tooltipTitle = (
-    <div style={{ textAlign: "right" }}>
-      <div style={{ color: "var(--layout-header-text)", fontWeight: 600, fontSize: 14 }}>{displayName}</div>
-      {user?.email ? (
-        <div style={{ color: "var(--layout-header-subtext)", fontSize: 12 }}>{emailLabel}</div>
-      ) : null}
-    </div>
+  const profileButtonStyle = useMemo(
+    () => ({
+      padding: 0,
+      borderRadius: "50%",
+      width: 46,
+      height: 46,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: isStale ? "var(--profile-alert-bg)" : "var(--layout-header-button-bg)",
+      boxShadow: isStale ? "var(--profile-alert-shadow)" : "var(--layout-header-button-shadow)",
+      color: isStale ? "var(--profile-alert-text)" : "var(--layout-header-accent)",
+      transition: "background 0.3s ease, box-shadow 0.3s ease, color 0.3s ease"
+    }),
+    [isStale]
   );
+
+  const avatarStyle = useMemo(
+    () => ({
+      backgroundColor: isStale ? "var(--profile-alert-avatar-bg)" : "var(--layout-header-avatar-bg)",
+      color: isStale ? "var(--profile-alert-text)" : "var(--layout-header-accent)",
+      transition: "background-color 0.3s ease, color 0.3s ease"
+    }),
+    [isStale]
+  );
+
+  const profileButtonClassName = isStale ? "profile-button profile-button--stale" : "profile-button";
+  const ariaLabel = `Account menu for ${displayName}${isStale ? ", market data stale" : ""}`;
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -165,32 +238,15 @@ export default function Dashboard() {
             <TimeDisplay />
             <ThemeToggle />
             <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: accountMenuItems }}>
-              <Tooltip placement="bottomRight" title={tooltipTitle} mouseEnterDelay={0.15} mouseLeaveDelay={0.1}>
-                <Button
-                  type="text"
-                  aria-label={`Account menu for ${displayName}`}
-                  style={{
-                    padding: 0,
-                    borderRadius: "50%",
-                    width: 46,
-                    height: 46,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "var(--layout-header-button-bg)",
-                    boxShadow: "var(--layout-header-button-shadow)",
-                    color: "var(--layout-header-accent)"
-                  }}
+              <Button type="text" aria-label={ariaLabel} className={profileButtonClassName} style={profileButtonStyle}>
+                <Avatar
+                  size={40}
+                  style={avatarStyle}
+                  icon={!user?.full_name && !user?.email ? <UserOutlined /> : undefined}
                 >
-                  <Avatar
-                    size={40}
-                    style={{ backgroundColor: "var(--layout-header-avatar-bg)", color: "var(--layout-header-accent)" }}
-                    icon={!user?.full_name && !user?.email ? <UserOutlined /> : undefined}
-                  >
-                    {initials}
-                  </Avatar>
-                </Button>
-              </Tooltip>
+                  {initials}
+                </Avatar>
+              </Button>
             </Dropdown>
           </Space>
         </Space>

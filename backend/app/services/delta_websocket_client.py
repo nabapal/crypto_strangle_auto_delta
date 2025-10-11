@@ -21,6 +21,15 @@ logger = logging.getLogger("delta.websocket")
 
 class OptionPriceStream:
     """Lightweight manager for Delta Exchange option ticker websocket."""
+    _subscriptions: Set[str]
+    _latest_quotes: Dict[str, Dict[str, Any]]
+    _backoff_seconds: float
+    _last_quote_at: float | None
+    _last_heartbeat_logged: float
+    _stream_started_at: float | None
+    _stale_alert_active: bool
+    _stale_threshold_seconds: float
+    _quote_sampler: LogSampler
 
     def __init__(self, url: str = "wss://socket.india.delta.exchange"):
         self._url = url
@@ -29,13 +38,16 @@ class OptionPriceStream:
         self._stop_event = asyncio.Event()
         self._subscription_event = asyncio.Event()
         self._conn: WebSocketClientProtocol | None = None
-        self._subscriptions: Set[str] = set()
+        self._subscriptions = set()
         self._latest_quotes: Dict[str, Dict[str, Any]] = {}
         self._backoff_seconds = 1.0
         self._last_quote_at: float | None = None
-        self._last_heartbeat_logged: float = 0.0
+        self._last_heartbeat_logged = 0.0
+        self._stream_started_at: float | None = None
+        self._stale_alert_active = False
         settings = get_settings()
         self._quote_sampler = LogSampler(getattr(settings, "tick_log_sample_rate", 50))
+        self._stale_threshold_seconds = float(getattr(settings, "tick_stale_warning_seconds", 60.0))
 
     async def start(self) -> None:
         """Ensure the background websocket listener is running."""
@@ -86,6 +98,9 @@ class OptionPriceStream:
             self._subscriptions.clear()
             self._subscription_event.clear()
             self._latest_quotes.clear()
+            self._stale_alert_active = False
+            self._last_quote_at = None
+            self._stream_started_at = None
         if task:
             await asyncio.shield(task)
         self._stop_event.clear()
@@ -139,8 +154,16 @@ class OptionPriceStream:
                         subscription_task = asyncio.create_task(self._subscription_event.wait())
                         done, pending = await asyncio.wait(
                             {receive_task, subscription_task},
+                            timeout=5.0,
                             return_when=asyncio.FIRST_COMPLETED,
                         )
+                        if not done:
+                            for task in pending:
+                                task.cancel()
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await task
+                            self._check_for_stale_quotes()
+                            continue
                         if receive_task in done:
                             try:
                                 message = receive_task.result()
@@ -186,11 +209,15 @@ class OptionPriceStream:
             finally:
                 async with self._lock:
                     self._conn = None
+                    self._stream_started_at = None
+                    self._stale_alert_active = False
         logger.info("Option price stream stopped", extra={"event": "websocket_stopped"})
 
     async def _on_open(self, ws: WebSocketClientProtocol) -> None:
         async with self._lock:
             self._conn = ws
+            self._stream_started_at = time.time()
+            self._stale_alert_active = False
         await self._send_subscribe(ws)
 
     async def _send_subscribe(self, ws: WebSocketClientProtocol) -> None:
@@ -223,6 +250,45 @@ class OptionPriceStream:
             logger.exception(
                 "Failed sending subscribe payload",
                 extra={"event": "websocket_subscribe_failed"},
+            )
+
+    def _check_for_stale_quotes(self) -> None:
+        if not self._subscriptions:
+            if self._stale_alert_active:
+                logger.info(
+                    "Cleared websocket quote staleness alert (no active subscriptions)",
+                    extra={"event": "websocket_quotes_cleared"},
+                )
+                self._stale_alert_active = False
+            return
+
+        last_activity = self._last_quote_at or self._stream_started_at
+        if last_activity is None:
+            return
+
+        age_seconds = max(time.time() - last_activity, 0.0)
+        if age_seconds >= self._stale_threshold_seconds:
+            if not self._stale_alert_active:
+                self._stale_alert_active = True
+                logger.warning(
+                    "No websocket quotes received for %.1f seconds",
+                    age_seconds,
+                    extra={
+                        "event": "websocket_quotes_stale",
+                        "age_seconds": age_seconds,
+                        "subscription_count": len(self._subscriptions),
+                    },
+                )
+        elif self._stale_alert_active:
+            self._stale_alert_active = False
+            logger.info(
+                "Websocket quote flow restored after %.1f seconds",
+                age_seconds,
+                extra={
+                    "event": "websocket_quotes_recovered",
+                    "age_seconds": age_seconds,
+                    "subscription_count": len(self._subscriptions),
+                },
             )
 
     async def _handle_message(self, message: str | bytes) -> None:
@@ -307,9 +373,21 @@ class OptionPriceStream:
             ),
             "raw": data,
         }
+        previous_quote_ts = self._last_quote_at or self._stream_started_at
         self._latest_quotes[symbol] = quote
         now = time.time()
         self._last_quote_at = now
+        if self._stale_alert_active:
+            elapsed = max(now - (previous_quote_ts or now), 0.0)
+            self._stale_alert_active = False
+            logger.info(
+                "Websocket quote flow restored by incoming data",
+                extra={
+                    "event": "websocket_quotes_recovered",
+                    "age_seconds": elapsed,
+                    "subscription_count": len(self._subscriptions),
+                },
+            )
         if now - self._last_heartbeat_logged >= 30:
             self._last_heartbeat_logged = now
             logger.debug(
