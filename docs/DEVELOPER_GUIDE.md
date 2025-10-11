@@ -97,6 +97,7 @@ Docker & Ops files
 - **Protected Routes**: `ProtectedRoute` ensures only authenticated users reach dashboard pages.
 - **React Query Hooks**: Under `src/api` & `src/hooks`, encapsulating API calls (config list, runtime, analytics, logs) with caching/polling.
 - **UI Components**: Ant Design forms/tables display configuration panels, PnL charts, log tables, session history, and analytics tiles.
+- **Theme & Time Utilities**: `ThemeProvider` (in `src/context/ThemeContext.tsx`) centralizes Ant Design theming and supports the header light/dark toggle, while `TimeDisplay` renders synchronized UTC/IST timestamps for operators; both are covered by Vitest suites in `src/components/__tests__/ThemeToggle.test.tsx` and `src/components/__tests__/TimeDisplay.test.tsx`.
 
 ---
 
@@ -276,6 +277,7 @@ This script:
 - Maintain structured logging (JSON) for backend events.
 - Keep bundle sizes manageable—consider `manualChunks` if new pages grow large.
 - Document new environment variables in `.env.example` and README.
+- When touching frontend visuals, extend the CSS variable palette in `src/styles.css` and ensure light/dark contrast stays WCAG-compliant.
 - When altering DB models, ensure `Base.metadata.create_all` still succeeds or introduce migrations.
 
 ---
