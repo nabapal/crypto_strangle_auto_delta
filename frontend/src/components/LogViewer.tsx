@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { Card, DatePicker, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, Button } from "antd";
+import { Card, DatePicker, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, Button, Statistic, Row, Col } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useQuery } from "@tanstack/react-query";
-import dayjs, { Dayjs } from "dayjs";
+import dayjs, { Dayjs, ManipulateType } from "dayjs";
 
-import { fetchBackendLogs, type BackendLogFilters, type BackendLogRecord } from "../api/logs";
+import {
+  fetchBackendLogs,
+  fetchBackendLogSummary,
+  type BackendLogFilters,
+  type BackendLogRecord,
+  type BackendLogSummary,
+  type BackendLogSummaryLatest,
+  type BackendLogSummaryTopItem,
+} from "../api/logs";
 import { sharedQueryOptions } from "../api/queryOptions";
 import logger from "../utils/logger";
 
@@ -27,6 +35,12 @@ const LEVEL_COLORS: Record<string, string> = {
 
 const AUTO_REFRESH_INTERVAL = 5000;
 
+const QUICK_RANGES = [
+  { id: "15m", label: "Last 15m", duration: 15, unit: "minute" as const },
+  { id: "1h", label: "Last 1h", duration: 1, unit: "hour" as const },
+  { id: "24h", label: "Last 24h", duration: 24, unit: "hour" as const }
+];
+
 type TimeRange = [Dayjs | null, Dayjs | null];
 
 export default function LogViewer() {
@@ -43,6 +57,7 @@ export default function LogViewer() {
   });
   const [timeRange, setTimeRange] = useState<TimeRange>([null, null]);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
+  const [selectedRangePreset, setSelectedRangePreset] = useState<string | null>(null);
 
   useEffect(() => {
     logger.info("Log viewer opened", { event: "ui_log_viewer_opened" });
@@ -55,15 +70,28 @@ export default function LogViewer() {
     queryKey,
     queryFn: () => fetchBackendLogs(filters)
   });
-  const { data, isLoading, isFetching, refetch } = query;
+  const { data, isLoading, isFetching, refetch: refetchLogs } = query;
+
+  const summaryFilters = useMemo(() => {
+    const { page, pageSize, ...rest } = filters;
+    return rest;
+  }, [filters]);
+
+  const summaryQuery = useQuery({
+    ...sharedQueryOptions,
+    queryKey: ["backendLogSummary", summaryFilters],
+    queryFn: () => fetchBackendLogSummary(summaryFilters)
+  });
+  const { data: summary, isLoading: isSummaryLoading, isFetching: isSummaryFetching, refetch: refetchSummary } = summaryQuery;
 
   useEffect(() => {
     if (!autoRefresh) return;
     const handle = window.setInterval(() => {
-      refetch();
+      refetchLogs();
+      refetchSummary();
     }, AUTO_REFRESH_INTERVAL);
     return () => window.clearInterval(handle);
-  }, [autoRefresh, refetch]);
+  }, [autoRefresh, refetchLogs, refetchSummary]);
 
   const handleFilterChange = (partial: Partial<BackendLogFilters>) => {
     setFilters((current) => {
@@ -80,6 +108,7 @@ export default function LogViewer() {
 
   const handleResetFilters = () => {
     setTimeRange([null, null]);
+    setSelectedRangePreset(null);
     setFilters({
       page: 1,
       pageSize: filters.pageSize ?? 50,
@@ -93,13 +122,25 @@ export default function LogViewer() {
     });
   };
 
-  const onTimeRangeChange = (range: TimeRange) => {
+  const applyTimeRange = (range: TimeRange) => {
     setTimeRange(range);
     const [start, end] = range;
     handleFilterChange({
       startTime: start ? start.toISOString() : null,
       endTime: end ? end.toISOString() : null
     });
+  };
+
+  const onTimeRangeChange = (range: TimeRange) => {
+    setSelectedRangePreset(null);
+    applyTimeRange(range);
+  };
+
+  const applyQuickRange = (id: string, duration: number, unit: ManipulateType) => {
+    const end = dayjs();
+    const start = end.subtract(duration, unit);
+    setSelectedRangePreset(id);
+    applyTimeRange([start, end]);
   };
 
   const columns: ColumnsType<BackendLogRecord> = useMemo(
@@ -152,6 +193,90 @@ export default function LogViewer() {
 
   const dataSource = data?.items ?? [];
 
+  const combinedFetching = isFetching || isSummaryFetching;
+
+  const handleManualRefresh = () => {
+    void refetchLogs();
+    void refetchSummary();
+  };
+
+  const renderLevelCounts = (summaryData: BackendLogSummary) => {
+    const entries = Object.entries(summaryData.level_counts ?? {}).sort((a, b) => b[1] - a[1]);
+    if (!entries.length) {
+      return <Text type="secondary">None</Text>;
+    }
+    return (
+      <Space size="small" wrap>
+        {entries.map(([levelKey, count]) => (
+          <Tag key={levelKey} color={LEVEL_COLORS[levelKey] ?? "default"}>
+            {levelKey}: {count}
+          </Tag>
+        ))}
+      </Space>
+    );
+  };
+
+  const renderLevelsSection = (summaryData: BackendLogSummary) => (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Text strong>{`Levels (total: ${summaryData.total ?? 0})`}</Text>
+      {renderLevelCounts(summaryData)}
+    </Space>
+  );
+
+  const renderTopItems = (title: string, items: BackendLogSummaryTopItem[]) => (
+    <div>
+      <Text strong style={{ display: "block" }}>{title}</Text>
+      {items.length ? (
+        <Space direction="vertical" size={4}>
+          {items.map((item) => (
+            <Text key={item.name}>
+              {item.name} <Text type="secondary">({item.count})</Text>
+            </Text>
+          ))}
+        </Space>
+      ) : (
+        <Text type="secondary">None</Text>
+      )}
+    </div>
+  );
+
+  const renderLatest = (label: string, latest?: BackendLogSummaryLatest | null) => (
+    <div>
+      <Text strong style={{ display: "block" }}>{label}</Text>
+      {latest ? (
+        <Space direction="vertical" size={4}>
+          <Text>{dayjs(latest.timestamp).format("YYYY-MM-DD HH:mm:ss")}</Text>
+          <Text type="secondary">
+            {(latest.logger_name ?? "—")}
+            {latest.event ? ` • ${latest.event}` : ""}
+          </Text>
+          <Text>{latest.message}</Text>
+          {(latest.correlation_id || latest.request_id) && (
+            <Text type="secondary">
+              {latest.correlation_id ? `corr: ${latest.correlation_id}` : ""}
+              {latest.correlation_id && latest.request_id ? " • " : ""}
+              {latest.request_id ? `req: ${latest.request_id}` : ""}
+            </Text>
+          )}
+        </Space>
+      ) : (
+        <Text type="secondary">None</Text>
+      )}
+    </div>
+  );
+
+  const formatIngestionLag = (seconds?: number | null) => {
+    if (seconds == null) {
+      return "—";
+    }
+    if (seconds < 60) {
+      return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const remaining = Math.round(seconds % 60);
+    return `${minutes}m ${remaining}s`;
+  };
+
   return (
     <Card
       title="Backend Logs"
@@ -163,14 +288,58 @@ export default function LogViewer() {
             checkedChildren="Auto refresh"
             unCheckedChildren="Auto refresh"
           />
-          <Button onClick={() => refetch()} loading={isFetching}>
+          <Button onClick={handleManualRefresh} loading={combinedFetching}>
             Refresh
           </Button>
         </Space>
       }
     >
       <Space direction="vertical" size="large" style={{ width: "100%" }}>
+        <Card size="small" loading={isSummaryLoading} styles={{ body: { padding: 12 } }}>
+          {summary ? (
+            <Row gutter={[16, 16]} align="top">
+              <Col xs={24} lg={8}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {renderLevelsSection(summary)}
+                  <Space direction="vertical" size={8}>
+                    <Statistic
+                      title="Latest entry"
+                      value={summary.latest_entry_at ? dayjs(summary.latest_entry_at).format("YYYY-MM-DD HH:mm:ss") : "—"}
+                    />
+                    <Statistic title="Ingestion lag" value={formatIngestionLag(summary.ingestion_lag_seconds)} />
+                  </Space>
+                </Space>
+              </Col>
+              <Col xs={24} lg={8}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {renderLatest("Latest warning", summary.latest_warning)}
+                  {renderLatest("Latest error", summary.latest_error)}
+                </Space>
+              </Col>
+              <Col xs={24} lg={8}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {renderTopItems("Top loggers", summary.top_loggers ?? [])}
+                  {renderTopItems("Top events", summary.top_events ?? [])}
+                </Space>
+              </Col>
+            </Row>
+          ) : (
+            <Text type="secondary">No logs match the current filters.</Text>
+          )}
+        </Card>
+
         <Space size="middle" wrap>
+          <Space size="small">
+            {QUICK_RANGES.map((range) => (
+              <Button
+                key={range.id}
+                type={selectedRangePreset === range.id ? "primary" : "default"}
+                onClick={() => applyQuickRange(range.id, range.duration, range.unit)}
+              >
+                {range.label}
+              </Button>
+            ))}
+          </Space>
           <Select
             allowClear
             options={LEVEL_OPTIONS}

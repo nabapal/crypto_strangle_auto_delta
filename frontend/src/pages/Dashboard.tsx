@@ -12,6 +12,7 @@ import { BellOutlined, LockOutlined, LogoutOutlined, UserOutlined } from "@ant-d
 
 import logger from "../utils/logger";
 import { useAuth } from "../context/AuthContext";
+import ThemeToggle from "../components/ThemeToggle";
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
@@ -137,9 +138,9 @@ export default function Dashboard() {
 
   const tooltipTitle = (
     <div style={{ textAlign: "right" }}>
-      <div style={{ color: "#f8fafc", fontWeight: 600, fontSize: 14 }}>{displayName}</div>
+      <div style={{ color: "var(--layout-header-text)", fontWeight: 600, fontSize: 14 }}>{displayName}</div>
       {user?.email ? (
-        <div style={{ color: "rgba(148, 163, 184, 0.85)", fontSize: 12 }}>{emailLabel}</div>
+        <div style={{ color: "var(--layout-header-subtext)", fontSize: 12 }}>{emailLabel}</div>
       ) : null}
     </div>
   );
@@ -148,49 +149,52 @@ export default function Dashboard() {
     <Layout style={{ minHeight: "100vh" }}>
       <Header
         style={{
-          background: "#0f172a",
+          background: "var(--layout-header-bg)",
           display: "flex",
           alignItems: "center",
           padding: "0 32px",
-          borderBottom: "1px solid rgba(148, 163, 184, 0.18)"
+          borderBottom: "1px solid var(--layout-header-border)"
         }}
       >
         <Space style={{ width: "100%", justifyContent: "space-between" }}>
-          <Title level={3} style={{ color: "#f8fafc", margin: 0 }}>
+          <Title level={3} style={{ color: "var(--layout-header-text)", margin: 0 }}>
             Delta Strangle Control Plane
           </Title>
-          <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: accountMenuItems }}>
-            <Tooltip placement="bottomRight" title={tooltipTitle} mouseEnterDelay={0.15} mouseLeaveDelay={0.1}>
-              <Button
-                type="text"
-                aria-label={`Account menu for ${displayName}`}
-                style={{
-                  padding: 0,
-                  borderRadius: "50%",
-                  width: 46,
-                  height: 46,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  background: "rgba(15, 23, 42, 0.6)",
-                  boxShadow: "0 16px 30px rgba(15, 23, 42, 0.45)",
-                  color: "#38bdf8"
-                }}
-              >
-                <Avatar
-                  size={40}
-                  style={{ backgroundColor: "rgba(56, 189, 248, 0.18)", color: "#38bdf8" }}
-                  icon={!user?.full_name && !user?.email ? <UserOutlined /> : undefined}
+          <Space size="large" align="center">
+            <ThemeToggle />
+            <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: accountMenuItems }}>
+              <Tooltip placement="bottomRight" title={tooltipTitle} mouseEnterDelay={0.15} mouseLeaveDelay={0.1}>
+                <Button
+                  type="text"
+                  aria-label={`Account menu for ${displayName}`}
+                  style={{
+                    padding: 0,
+                    borderRadius: "50%",
+                    width: 46,
+                    height: 46,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "var(--layout-header-button-bg)",
+                    boxShadow: "var(--layout-header-button-shadow)",
+                    color: "var(--layout-header-accent)"
+                  }}
                 >
-                  {initials}
-                </Avatar>
-              </Button>
-            </Tooltip>
-          </Dropdown>
+                  <Avatar
+                    size={40}
+                    style={{ backgroundColor: "var(--layout-header-avatar-bg)", color: "var(--layout-header-accent)" }}
+                    icon={!user?.full_name && !user?.email ? <UserOutlined /> : undefined}
+                  >
+                    {initials}
+                  </Avatar>
+                </Button>
+              </Tooltip>
+            </Dropdown>
+          </Space>
         </Space>
       </Header>
-      <Content style={{ padding: "32px", background: "#f5f7fb" }}>
-        <Tabs type="card" defaultActiveKey="config" items={tabItems} destroyInactiveTabPane onChange={handleTabChange} />
+      <Content style={{ padding: "32px", background: "var(--layout-content-bg)" }}>
+        <Tabs type="card" defaultActiveKey="control" items={tabItems} destroyInactiveTabPane onChange={handleTabChange} />
       </Content>
     </Layout>
   );

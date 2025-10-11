@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -90,6 +90,77 @@ class AnalyticsResponse(BaseModel):
     generated_at: datetime
     kpis: list[AnalyticsKpi]
     chart_data: dict[str, list[dict[str, float | int]]]
+
+
+class AnalyticsHistoryRange(BaseModel):
+    start: datetime
+    end: datetime
+    preset: Optional[str] = None
+
+
+class AnalyticsHistoryMetrics(BaseModel):
+    days_running: int = 0
+    trade_count: int = 0
+    win_count: int = 0
+    loss_count: int = 0
+    average_pnl: float = 0.0
+    average_win: float = 0.0
+    average_loss: float = 0.0
+    win_rate: float = 0.0
+    consecutive_wins: int = 0
+    consecutive_losses: int = 0
+    max_gain: float = 0.0
+    max_loss: float = 0.0
+    max_drawdown: float = 0.0
+
+
+class AnalyticsChartPoint(BaseModel):
+    timestamp: datetime
+    value: float
+    meta: Dict[str, Any] | None = None
+
+
+class AnalyticsHistogramBucket(BaseModel):
+    start: float
+    end: float
+    count: int
+
+
+class AnalyticsHistoryCharts(BaseModel):
+    cumulative_pnl: List[AnalyticsChartPoint] = Field(default_factory=list)
+    drawdown: List[AnalyticsChartPoint] = Field(default_factory=list)
+    rolling_win_rate: List[AnalyticsChartPoint] = Field(default_factory=list)
+    trades_histogram: List[AnalyticsHistogramBucket] = Field(default_factory=list)
+
+
+class AnalyticsTimelineEntry(BaseModel):
+    timestamp: datetime
+    session_id: int
+    order_id: Optional[str] = None
+    position_id: Optional[int] = None
+    symbol: Optional[str] = None
+    side: Optional[str] = None
+    quantity: float | None = None
+    price: float | None = None
+    fill_price: float | None = None
+    realized_pnl: float | None = None
+    unrealized_pnl: float | None = None
+    metadata: Dict[str, Any] | None = None
+
+
+class AnalyticsDataStatus(BaseModel):
+    is_stale: bool = False
+    latest_timestamp: Optional[datetime] = None
+    message: Optional[str] = None
+
+
+class AnalyticsHistoryResponse(BaseModel):
+    generated_at: datetime
+    range: AnalyticsHistoryRange
+    metrics: AnalyticsHistoryMetrics
+    charts: AnalyticsHistoryCharts
+    timeline: List[AnalyticsTimelineEntry]
+    status: AnalyticsDataStatus
 
 
 class StrategyRuntimeSchedule(BaseModel):

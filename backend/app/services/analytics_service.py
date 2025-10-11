@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..models import PositionLedger, StrategySession, TradeAnalyticsSnapshot
-from ..schemas.trading import AnalyticsKpi, AnalyticsResponse
+from ..schemas.trading import (
+    AnalyticsChartPoint,
+    AnalyticsDataStatus,
+    AnalyticsHistoryCharts,
+    AnalyticsHistoryMetrics,
+    AnalyticsHistoryRange,
+    AnalyticsHistoryResponse,
+    AnalyticsKpi,
+    AnalyticsResponse,
+    AnalyticsTimelineEntry,
+    AnalyticsHistogramBucket,
+)
 from ..services.logging_utils import logging_context
 
 logger = logging.getLogger("app.analytics")
@@ -62,6 +76,70 @@ class AnalyticsService:
             generated_at=datetime.utcnow(),
             kpis=kpis,
             chart_data={"pnl": [], "realized": [], "unrealized": []},
+        )
+
+    async def history(
+        self,
+        start: datetime | None,
+        end: datetime | None,
+        strategy_id: str | None = None,
+        preset: str | None = None,
+    ) -> AnalyticsHistoryResponse:
+        now = datetime.now(timezone.utc)
+        end_dt = self._normalize_request_datetime(end, default=now)
+        start_dt = self._normalize_request_datetime(start, default=end_dt - timedelta(days=30))
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        stmt = (
+            select(StrategySession)
+            .options(
+                selectinload(StrategySession.positions),
+                selectinload(StrategySession.orders),
+            )
+            .where(
+                and_(
+                    StrategySession.activated_at.is_not(None),
+                    StrategySession.activated_at <= end_dt,
+                    or_(
+                        StrategySession.deactivated_at.is_(None),
+                        StrategySession.deactivated_at >= start_dt,
+                    ),
+                )
+            )
+            .order_by(StrategySession.activated_at.asc())
+        )
+
+        if strategy_id:
+            stmt = stmt.where(StrategySession.strategy_id == strategy_id)
+
+        result = await self.session.execute(stmt)
+        sessions = result.scalars().unique().all()
+
+        metrics = AnalyticsHistoryMetrics()
+        charts = AnalyticsHistoryCharts()
+        timeline: list[AnalyticsTimelineEntry] = []
+
+        if sessions:
+            metrics = self._compute_metrics(sessions, start_dt, end_dt)
+            charts = self._compute_charts(sessions, start_dt, end_dt)
+            timeline = self._build_timeline(sessions, start_dt, end_dt)
+
+        latest_ts: Optional[datetime] = None
+        if charts.cumulative_pnl:
+            latest_ts = charts.cumulative_pnl[-1].timestamp
+        elif timeline:
+            latest_ts = max(entry.timestamp for entry in timeline)
+
+        status = self._build_status(latest_ts, end_dt, now)
+
+        return AnalyticsHistoryResponse(
+            generated_at=now,
+            range=AnalyticsHistoryRange(start=start_dt, end=end_dt, preset=preset),
+            metrics=metrics,
+            charts=charts,
+            timeline=timeline,
+            status=status,
         )
 
     async def _total_realized_pnl(self) -> float:
@@ -231,3 +309,262 @@ class AnalyticsService:
             normalized.setdefault(key, [])
 
         return normalized
+
+    def _normalize_request_datetime(self, value: datetime | None, default: datetime) -> datetime:
+        if value is None:
+            return default
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _session_overlaps_range(self, session: StrategySession, start_dt: datetime, end_dt: datetime) -> bool:
+        activated = self._normalize_request_datetime(session.activated_at, start_dt)
+        deactivated = (
+            self._normalize_request_datetime(session.deactivated_at, end_dt)
+            if session.deactivated_at
+            else end_dt
+        )
+        return activated <= end_dt and deactivated >= start_dt
+
+    def _filter_positions(
+        self, sessions: Iterable[StrategySession], start_dt: datetime, end_dt: datetime
+    ) -> list[PositionLedger]:
+        filtered: list[PositionLedger] = []
+        for session in sessions:
+            for position in session.positions:
+                timestamps = [position.entry_time, position.exit_time, session.deactivated_at, session.activated_at]
+                normalized_times = [
+                    self._normalize_request_datetime(ts, start_dt) for ts in timestamps if ts is not None
+                ]
+                if not normalized_times:
+                    continue
+                earliest = min(normalized_times)
+                latest = max(normalized_times)
+                if earliest <= end_dt and latest >= start_dt:
+                    filtered.append(position)
+        return filtered
+
+    def _filter_orders(self, sessions: Iterable[StrategySession], start_dt: datetime, end_dt: datetime):
+        orders = []
+        for session in sessions:
+            for order in session.orders:
+                created_at = self._normalize_request_datetime(order.created_at, start_dt)
+                if start_dt <= created_at <= end_dt:
+                    orders.append((session, order))
+        return orders
+
+    def _compute_metrics(
+        self, sessions: list[StrategySession], start_dt: datetime, end_dt: datetime
+    ) -> AnalyticsHistoryMetrics:
+        positions = self._filter_positions(sessions, start_dt, end_dt)
+        metrics = AnalyticsHistoryMetrics()
+
+        if not positions:
+            metrics.days_running = len({self._normalize_request_datetime(s.activated_at, start_dt).date() for s in sessions})
+            return metrics
+
+        realized_values: list[float] = []
+        win_flags: list[int] = []
+        trade_datetimes: list[datetime] = []
+
+        for position in positions:
+            realized = float(position.realized_pnl or 0.0)
+            realized_values.append(realized)
+            win_flags.append(1 if realized > 0 else 0 if realized == 0 else -1)
+            exit_ts = position.exit_time or position.entry_time or datetime.now(timezone.utc)
+            trade_datetimes.append(self._normalize_request_datetime(exit_ts, start_dt))
+
+        metrics.trade_count = len(realized_values)
+        metrics.days_running = len({dt.date() for dt in trade_datetimes})
+
+        wins = [value for value in realized_values if value > 0]
+        losses = [value for value in realized_values if value < 0]
+        metrics.win_count = len(wins)
+        metrics.loss_count = len(losses)
+
+        metrics.average_pnl = sum(realized_values) / metrics.trade_count if metrics.trade_count else 0.0
+        metrics.average_win = sum(wins) / metrics.win_count if metrics.win_count else 0.0
+        metrics.average_loss = sum(losses) / metrics.loss_count if metrics.loss_count else 0.0
+        metrics.win_rate = (metrics.win_count / metrics.trade_count) * 100 if metrics.trade_count else 0.0
+        metrics.max_gain = max(wins) if wins else 0.0
+        metrics.max_loss = min(losses) if losses else 0.0
+
+        # Compute streaks
+        sorted_positions = sorted(
+            zip(trade_datetimes, realized_values, win_flags), key=lambda item: item[0]
+        )
+        current_win_streak = 0
+        current_loss_streak = 0
+        best_win_streak = 0
+        best_loss_streak = 0
+        for _, pnl_value, flag in sorted_positions:
+            if pnl_value > 0:
+                current_win_streak += 1
+                best_win_streak = max(best_win_streak, current_win_streak)
+                current_loss_streak = 0
+            elif pnl_value < 0:
+                current_loss_streak += 1
+                best_loss_streak = max(best_loss_streak, current_loss_streak)
+                current_win_streak = 0
+            else:
+                current_win_streak = 0
+                current_loss_streak = 0
+        metrics.consecutive_wins = best_win_streak
+        metrics.consecutive_losses = best_loss_streak
+
+        # Drawdown from cumulative PnL
+        cumulative = 0.0
+        running_high = 0.0
+        max_drawdown = 0.0
+        for _, pnl_value, _ in sorted_positions:
+            cumulative += pnl_value
+            running_high = max(running_high, cumulative)
+            drawdown = running_high - cumulative
+            max_drawdown = max(max_drawdown, drawdown)
+        metrics.max_drawdown = max_drawdown
+
+        return metrics
+
+    def _compute_charts(
+        self, sessions: list[StrategySession], start_dt: datetime, end_dt: datetime
+    ) -> AnalyticsHistoryCharts:
+        positions = self._filter_positions(sessions, start_dt, end_dt)
+        charts = AnalyticsHistoryCharts()
+        if not positions:
+            return charts
+
+        points = []
+        for position in positions:
+            event_time = position.exit_time or position.entry_time or start_dt
+            normalized_time = self._normalize_request_datetime(event_time, start_dt)
+            points.append((normalized_time, float(position.realized_pnl or 0.0)))
+
+        points.sort(key=lambda item: item[0])
+
+        cumulative = 0.0
+        running_high = 0.0
+        window = 10
+        win_window: list[int] = []
+        cumulative_points: list[AnalyticsChartPoint] = []
+        drawdown_points: list[AnalyticsChartPoint] = []
+        win_rate_points: list[AnalyticsChartPoint] = []
+
+        histogram_values: list[float] = []
+
+        for timestamp, realized in points:
+            cumulative += realized
+            running_high = max(running_high, cumulative)
+            drawdown = running_high - cumulative
+            histogram_values.append(realized)
+
+            cumulative_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative))
+            drawdown_points.append(AnalyticsChartPoint(timestamp=timestamp, value=drawdown))
+
+            win_flag = 1 if realized > 0 else 0
+            win_window.append(win_flag)
+            if len(win_window) > window:
+                win_window.pop(0)
+            denom = len(win_window)
+            rate = (sum(win_window) / denom) * 100 if denom else 0.0
+            win_rate_points.append(AnalyticsChartPoint(timestamp=timestamp, value=rate))
+
+        charts.cumulative_pnl = cumulative_points
+        charts.drawdown = drawdown_points
+        charts.rolling_win_rate = win_rate_points
+        charts.trades_histogram = self._build_histogram(histogram_values)
+
+        return charts
+
+    def _build_histogram(self, values: list[float], buckets: int = 10) -> list[AnalyticsHistogramBucket]:
+        if not values:
+            return []
+
+        minimum = min(values)
+        maximum = max(values)
+        if minimum == maximum:
+            return [AnalyticsHistogramBucket(start=minimum, end=maximum, count=len(values))]
+
+        bucket_width = (maximum - minimum) / buckets or 1.0
+        counts = defaultdict(int)
+
+        for value in values:
+            index = int((value - minimum) / bucket_width)
+            if index == buckets:
+                index -= 1
+            bucket_start = minimum + index * bucket_width
+            bucket_end = bucket_start + bucket_width
+            counts[(round(bucket_start, 6), round(bucket_end, 6))] += 1
+
+        histogram = [
+            AnalyticsHistogramBucket(start=start, end=end, count=count)
+            for (start, end), count in sorted(counts.items(), key=lambda item: item[0][0])
+        ]
+        return histogram
+
+    def _build_timeline(
+        self, sessions: list[StrategySession], start_dt: datetime, end_dt: datetime
+    ) -> list[AnalyticsTimelineEntry]:
+        orders = self._filter_orders(sessions, start_dt, end_dt)
+        positions = self._filter_positions(sessions, start_dt, end_dt)
+        position_by_session: dict[tuple[int, str], list[PositionLedger]] = defaultdict(list)
+        for position in positions:
+            key = (position.session_id, position.symbol or "")
+            position_by_session[key].append(position)
+
+        timeline: list[AnalyticsTimelineEntry] = []
+        for session, order in orders:
+            normalized_ts = self._normalize_request_datetime(order.created_at, start_dt)
+            related_positions = position_by_session.get((session.id, order.symbol or ""), [])
+            primary_position = related_positions[0] if related_positions else None
+            timeline.append(
+                AnalyticsTimelineEntry(
+                    timestamp=normalized_ts,
+                    session_id=session.id,
+                    order_id=order.order_id,
+                    position_id=primary_position.id if primary_position else None,
+                    symbol=order.symbol,
+                    side=order.side,
+                    quantity=order.quantity,
+                    price=order.price,
+                    fill_price=order.fill_price,
+                    realized_pnl=(primary_position.realized_pnl if primary_position else None),
+                    unrealized_pnl=(primary_position.unrealized_pnl if primary_position else None),
+                    metadata={"status": order.status},
+                )
+            )
+
+        for position in positions:
+            exit_time = position.exit_time or position.entry_time
+            if not exit_time:
+                continue
+            normalized_ts = self._normalize_request_datetime(exit_time, start_dt)
+            timeline.append(
+                AnalyticsTimelineEntry(
+                    timestamp=normalized_ts,
+                    session_id=position.session_id,
+                    position_id=position.id,
+                    symbol=position.symbol,
+                    side=position.side,
+                    quantity=position.quantity,
+                    price=position.exit_price,
+                    realized_pnl=position.realized_pnl,
+                    unrealized_pnl=position.unrealized_pnl,
+                    metadata={"event": "position_exit" if position.exit_price is not None else "position_update"},
+                )
+            )
+
+        timeline.sort(key=lambda entry: entry.timestamp)
+        return timeline
+
+    def _build_status(self, latest_ts: Optional[datetime], end_dt: datetime, now: datetime) -> AnalyticsDataStatus:
+        if not latest_ts:
+            return AnalyticsDataStatus(is_stale=False, latest_timestamp=None, message="No data for selected range")
+
+        stale_threshold = timedelta(minutes=5)
+        is_recent_range = end_dt >= now - stale_threshold
+        age = now - latest_ts
+        is_stale = is_recent_range and age > stale_threshold
+        message = None
+        if is_stale:
+            message = f"Latest data is {int(age.total_seconds() // 60)} minutes old"
+        return AnalyticsDataStatus(is_stale=is_stale, latest_timestamp=latest_ts, message=message)

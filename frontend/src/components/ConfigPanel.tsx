@@ -559,7 +559,7 @@ export default function ConfigPanel() {
                 <Card
                   size="small"
                   title="Trailing SL Rules"
-                  style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}
+                  style={{ background: "var(--card-background-soft)", border: "1px solid var(--card-border-color)" }}
                   extra={
                     <Button type="link" onClick={() => add({ trigger: 0.6, level: 0.3 })}>
                       Add Rule

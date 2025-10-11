@@ -1,13 +1,15 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import dayjs, { Dayjs } from "dayjs";
 import { useQuery } from "@tanstack/react-query";
-import { Card, Col, Divider, Empty, Row, Space, Tag, Typography } from "antd";
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Alert, Card, Col, DatePicker, Empty, Row, Segmented, Space, Switch, Tag, Typography } from "antd";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 
-import { AnalyticsKpi, fetchAnalytics } from "../api/trading";
+import { AnalyticsChartPoint, AnalyticsHistoryResponse, fetchAnalytics, fetchAnalyticsHistory } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
 import logger from "../utils/logger";
 
 const { Title, Text } = Typography;
+const { RangePicker } = DatePicker;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -21,35 +23,14 @@ const numberFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 0
 });
 
-const formatKpiValue = (kpi: AnalyticsKpi) => {
-  const { value, unit } = kpi;
-  if (Number.isNaN(value) || value === null || value === undefined) {
-    return "–";
-  }
+type RangePreset = "7d" | "30d" | "90d" | "custom";
 
-  const normalizedUnit = unit?.toLowerCase() ?? "";
-
-  if (normalizedUnit === "usd") {
-    return currencyFormatter.format(value);
-  }
-
-  if (normalizedUnit.includes("pct")) {
-    return `${value.toFixed(2)}%`;
-  }
-
-  return numberFormatter.format(value);
-};
-
-const renderTrendTag = (trend?: number | null) => {
-  if (trend === null || trend === undefined || Number.isNaN(trend)) {
-    return null;
-  }
-
-  const prefix = trend > 0 ? "+" : "";
-  const color = trend > 0 ? "green" : trend < 0 ? "volcano" : "geekblue";
-
-  return <Tag color={color}>{`${prefix}${trend.toFixed(2)}% vs previous`}</Tag>;
-};
+const presetOptions = [
+  { label: "7D", value: "7d" },
+  { label: "30D", value: "30d" },
+  { label: "90D", value: "90d" },
+  { label: "Custom", value: "custom" }
+];
 
 const formatTimestamp = (value?: string) => {
   if (!value) {
@@ -67,16 +48,83 @@ const formatTimestamp = (value?: string) => {
   }).format(date);
 };
 
+const formatNumber = (value: number, options?: Intl.NumberFormatOptions) => {
+  if (Number.isNaN(value) || value === null || value === undefined) {
+    return "–";
+  }
+  if (options?.style === "currency") {
+    return currencyFormatter.format(value);
+  }
+  if (options?.style === "percent") {
+    return `${value.toFixed(options.maximumFractionDigits ?? 2)}%`;
+  }
+  return numberFormatter.format(value);
+};
+
+const computePresetRange = (preset: Exclude<RangePreset, "custom">): [Dayjs, Dayjs] => {
+  const end = dayjs();
+  switch (preset) {
+    case "7d":
+      return [end.subtract(7, "day"), end];
+    case "90d":
+      return [end.subtract(90, "day"), end];
+    case "30d":
+    default:
+      return [end.subtract(30, "day"), end];
+  }
+};
+
+const toChartData = (points: AnalyticsChartPoint[], valueKey = "value") =>
+  points.map((point) => ({
+    timestamp: point.timestamp,
+    [valueKey]: point.value,
+    meta: point.meta ?? undefined
+  }));
+
 export default function AnalyticsDashboard() {
+
+  const [preset, setPreset] = useState<RangePreset>("30d");
+  const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+
+  const selectedRange = useMemo(() => {
+    if (preset === "custom" && customRange) {
+      return customRange;
+    }
+    return computePresetRange((preset === "custom" ? "30d" : preset) as Exclude<RangePreset, "custom">);
+  }, [preset, customRange]);
+
+  const [rangeStart, rangeEnd] = selectedRange;
+
+  const historyParams = useMemo(() => {
+    const startIso = rangeStart.toISOString();
+    const endIso = rangeEnd.toISOString();
+    const effectivePreset = preset === "custom" ? undefined : preset;
+    return { start: startIso, end: endIso, preset: effectivePreset };
+  }, [preset, rangeStart, rangeEnd]);
+
   const analyticsQuery = useQuery({
     queryKey: ["analytics"],
     queryFn: fetchAnalytics,
-    refetchInterval: 5000,
+    refetchInterval: autoRefresh ? 10000 : false,
     ...sharedQueryOptions
   });
 
-  const data = analyticsQuery.data;
+  const historyQuery = useQuery({
+    queryKey: [
+      "analytics-history",
+      historyParams.start,
+      historyParams.end,
+      historyParams.preset ?? "custom"
+    ],
+    queryFn: () => fetchAnalyticsHistory(historyParams),
+    refetchInterval: autoRefresh ? 10000 : false,
+    ...sharedQueryOptions
+  });
+
   const isLoading = analyticsQuery.isLoading;
+  const historyData: AnalyticsHistoryResponse | undefined = historyQuery.data;
+  const isHistoryLoading = historyQuery.isLoading;
 
   const successRef = useRef<number>(0);
   const errorRef = useRef<string | null>(null);
@@ -92,106 +140,288 @@ export default function AnalyticsDashboard() {
         });
       }
     }
-  }, [analyticsQuery.data, analyticsQuery.dataUpdatedAt]);
 
-  useEffect(() => {
-    if (analyticsQuery.isError && analyticsQuery.error) {
-      const messageText = analyticsQuery.error instanceof Error ? analyticsQuery.error.message : String(analyticsQuery.error);
-      if (errorRef.current !== messageText) {
-        errorRef.current = messageText;
-        logger.error("Analytics snapshot failed", {
-          event: "ui_analytics_refresh_failed",
-          message: messageText
+    if (analyticsQuery.error) {
+      const message =
+        analyticsQuery.error instanceof Error
+          ? analyticsQuery.error.message
+          : String(analyticsQuery.error ?? "");
+      if (errorRef.current !== message) {
+        errorRef.current = message;
+        logger.error("Analytics snapshot refresh failed", {
+          event: "ui_analytics_refresh_error",
+          message
         });
       }
-    } else if (!analyticsQuery.isError) {
-      errorRef.current = null;
     }
-  }, [analyticsQuery.isError, analyticsQuery.error]);
+  }, [analyticsQuery.data, analyticsQuery.dataUpdatedAt, analyticsQuery.error]);
 
-  const kpis = data?.kpis ?? [];
-  const netKpi = kpis.find((kpi) => kpi.label.toLowerCase().includes("net"));
-  const secondaryKpis = netKpi ? kpis.filter((kpi) => kpi !== netKpi) : kpis;
+  const metrics = historyData?.metrics;
+  const metricsCards = useMemo(
+    () =>
+      metrics
+        ? [
+            { label: "Days Running", value: metrics.days_running, formatter: (val: number) => formatNumber(val) },
+            { label: "Trade Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) },
+            {
+              label: "Average PnL / Trade",
+              value: metrics.average_pnl,
+              formatter: (val: number) => formatNumber(val, { style: "currency" })
+            },
+            {
+              label: "Average Win",
+              value: metrics.average_win,
+              formatter: (val: number) => formatNumber(val, { style: "currency" })
+            },
+            {
+              label: "Average Loss",
+              value: metrics.average_loss,
+              formatter: (val: number) => formatNumber(val, { style: "currency" })
+            },
+            {
+              label: "Win Rate",
+              value: metrics.win_rate,
+              formatter: (val: number) => formatNumber(val, { style: "percent", maximumFractionDigits: 2 })
+            },
+            {
+              label: "Max Gain",
+              value: metrics.max_gain,
+              formatter: (val: number) => formatNumber(val, { style: "currency" })
+            },
+            {
+              label: "Max Loss",
+              value: metrics.max_loss,
+              formatter: (val: number) => formatNumber(val, { style: "currency" })
+            },
+            {
+              label: "Max Drawdown",
+              value: metrics.max_drawdown,
+              formatter: (val: number) => formatNumber(val, { style: "currency" })
+            },
+            {
+              label: "Win Streak",
+              value: metrics.consecutive_wins,
+              formatter: (val: number) => formatNumber(val)
+            },
+            {
+              label: "Loss Streak",
+              value: metrics.consecutive_losses,
+              formatter: (val: number) => formatNumber(val)
+            }
+          ]
+        : [],
+    [metrics]
+  );
 
-  const netPositive = (netKpi?.value ?? 0) >= 0;
-  const netCardStyle = {
-    background: netPositive ? "#022c22" : "#450a0a",
-    color: netPositive ? "#d1fae5" : "#fee2e2"
-  };
+  const chartsData = useMemo(() => {
+    if (!historyData) {
+      return {
+        cumulative: [],
+        drawdown: [],
+        winRate: [],
+        histogram: []
+      };
+    }
 
-  const kpiCardStyle = {
-    background: "#0f172a",
-    color: "#f8fafc"
-  };
+    return {
+      cumulative: toChartData(historyData.charts.cumulative_pnl, "value"),
+      drawdown: toChartData(historyData.charts.drawdown, "value"),
+      winRate: toChartData(historyData.charts.rolling_win_rate, "value"),
+      histogram: historyData.charts.trades_histogram.map((bucket) => ({
+        range: `${bucket.start.toFixed(0)} – ${bucket.end.toFixed(0)}`,
+        count: bucket.count
+      }))
+    };
+  }, [historyData]);
 
-  const hasAnalytics = kpis.length > 0 || (data?.chart_data?.pnl?.length ?? 0) > 0;
+  const hasHistory = Boolean(historyData);
+
+  const autoRefreshLabel = autoRefresh ? "On" : "Off";
 
   return (
-    <Card title={<Title level={4}>Advanced Analytics</Title>} loading={isLoading}>
-      {!isLoading && !hasAnalytics && <Empty description="No analytics snapshots yet" />} 
-      {hasAnalytics && (
-        <Space direction="vertical" size={24} style={{ width: "100%" }}>
+    <Card
+      title={<Title level={4}>Advanced Analytics</Title>}
+      extra={
+        <Space size={16} align="center">
+          <Segmented
+            options={presetOptions}
+            value={preset}
+            onChange={(value) => {
+              const selected = value as RangePreset;
+              setPreset(selected);
+              if (selected !== "custom") {
+                setCustomRange(null);
+              }
+            }}
+          />
+          <RangePicker
+            value={selectedRange}
+            maxDate={dayjs()}
+            allowClear={false}
+            onChange={(values) => {
+              if (values && values[0] && values[1]) {
+                setPreset("custom");
+                setCustomRange(values as [Dayjs, Dayjs]);
+              }
+            }}
+          />
+          <Space size={4} align="center">
+            <Text type="secondary">Auto refresh</Text>
+            <Switch
+              checked={autoRefresh}
+              onChange={(checked) => setAutoRefresh(checked)}
+              aria-label="Toggle auto refresh"
+            />
+            <Text strong>{autoRefreshLabel}</Text>
+          </Space>
+        </Space>
+      }
+      loading={isLoading && isHistoryLoading}
+    >
+      {historyQuery.isError && (
+        <Alert
+          type="error"
+          showIcon
+          message="Failed to load analytics history"
+          description={
+            historyQuery.error instanceof Error ? historyQuery.error.message : String(historyQuery.error ?? "")
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {!isHistoryLoading && !hasHistory && <Empty description="No analytics data for selected range" />}
+
+      {hasHistory && historyData && (
+        <Space direction="vertical" size={32} style={{ width: "100%" }}>
           <Row justify="space-between" align="middle">
             <Col>
-              <Text type="secondary">Snapshot generated</Text>
+              <Text type="secondary">Range</Text>
               <div>
-                <Tag color="geekblue">{formatTimestamp(data?.generated_at)}</Tag>
+                <Tag color="geekblue">
+                  {formatTimestamp(historyData.range.start)} → {formatTimestamp(historyData.range.end)}
+                </Tag>
               </div>
             </Col>
             <Col>
-              <Text type="secondary">Auto-refreshing every 5s</Text>
+              <Text type="secondary">Last generated</Text>
+              <div>
+                <Tag color="blue">{formatTimestamp(historyData.generated_at)}</Tag>
+              </div>
+            </Col>
+            <Col>
+              <Space size={8}>
+                <Tag color="cyan">Trades: {historyData.metrics.trade_count}</Tag>
+                <Tag color="purple">Win rate: {historyData.metrics.win_rate.toFixed(2)}%</Tag>
+              </Space>
             </Col>
           </Row>
 
-          {netKpi && (
-            <Row>
-              <Col span={24}>
-                <Card bordered={false} style={netCardStyle}>
-                  <Space direction="vertical" size={8}>
-                    <Text style={{ color: "inherit" }}>{netKpi.label}</Text>
-                    <Title level={1} style={{ color: "inherit", margin: 0 }}>
-                      {formatKpiValue(netKpi)}
+          {historyData.status && historyData.status.is_stale && (
+            <Alert
+              type="warning"
+              showIcon
+              message={historyData.status.message ?? "Data may be stale"}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
+          <Row gutter={[24, 24]}>
+            {metricsCards.map((metric) => (
+              <Col xs={24} md={12} lg={8} key={metric.label}>
+                <Card bordered>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">{metric.label}</Text>
+                    <Title level={4} style={{ margin: 0 }}>
+                      {metric.formatter(metric.value)}
                     </Title>
-                    {renderTrendTag(netKpi.trend)}
                   </Space>
                 </Card>
               </Col>
-            </Row>
-          )}
+            ))}
+          </Row>
 
-          {secondaryKpis.length > 0 && (
-            <Row gutter={[24, 24]}>
-              {secondaryKpis.map((kpi) => (
-                <Col xs={24} md={12} key={kpi.label}>
-                  <Card bordered={false} style={kpiCardStyle}>
-                    <Space direction="vertical" size={4}>
-                      <Text style={{ color: "#cbd5f5" }}>{kpi.label}</Text>
-                      <Title level={3} style={{ color: "#f8fafc", margin: 0 }}>
-                        {formatKpiValue(kpi)}
-                      </Title>
-                      {renderTrendTag(kpi.trend)}
-                    </Space>
-                  </Card>
-                </Col>
-              ))}
-            </Row>
-          )}
+          <Row gutter={[24, 24]}>
+            <Col xs={24} lg={12}>
+              <Card title="Cumulative PnL" bordered>
+                <ResponsiveContainer width="100%" height={280}>
+                  <AreaChart data={chartsData.cumulative}>
+                    <defs>
+                      <linearGradient id="pnlGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.8} />
+                        <stop offset="95%" stopColor="#38bdf8" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                    <XAxis dataKey="timestamp" tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")} />
+                    <YAxis tickFormatter={(value) => currencyFormatter.format(value).replace("$", "")} />
+                    <RechartsTooltip
+                      formatter={(value: number) => currencyFormatter.format(value)}
+                      labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
+                    />
+                    <Area type="monotone" dataKey="value" stroke="#0ea5e9" fillOpacity={1} fill="url(#pnlGradient)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </Card>
+            </Col>
 
-          <Divider style={{ borderColor: "#1f2937" }} />
-
-          <Row>
-            <Col span={24}>
-              <Title level={5}>PnL Momentum</Title>
-              <ResponsiveContainer width="100%" height={320}>
-                <LineChart data={data?.chart_data.pnl ?? []}>
-                  <XAxis dataKey="timestamp" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="pnl" stroke="#0ea5e9" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
+            <Col xs={24} lg={12}>
+              <Card title="Drawdown Curve" bordered>
+                <ResponsiveContainer width="100%" height={280}>
+                  <AreaChart data={chartsData.drawdown}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                    <XAxis dataKey="timestamp" tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")} />
+                    <YAxis tickFormatter={(value) => currencyFormatter.format(value).replace("$", "")} />
+                    <RechartsTooltip
+                      formatter={(value: number) => currencyFormatter.format(value)}
+                      labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
+                    />
+                    <Area type="monotone" dataKey="value" stroke="#f97316" fill="#fb923c" fillOpacity={0.4} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </Card>
             </Col>
           </Row>
+
+          <Row gutter={[24, 24]}>
+            <Col xs={24} lg={12}>
+              <Card title="Rolling Win Rate" bordered>
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={chartsData.winRate}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                    <XAxis dataKey="timestamp" tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")} />
+                    <YAxis domain={[0, 100]} tickFormatter={(value) => `${value.toFixed(0)}%`} />
+                    <RechartsTooltip
+                      formatter={(value: number) => `${value.toFixed(2)}%`}
+                      labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
+                    />
+                    <Line type="monotone" dataKey="value" stroke="#22c55e" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </Card>
+            </Col>
+
+            <Col xs={24} lg={12}>
+              <Card title="Trade PnL Histogram" bordered>
+                {chartsData.histogram.length === 0 ? (
+                  <Empty description="No trade distribution" />
+                ) : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={chartsData.histogram}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                      <XAxis dataKey="range" angle={-20} textAnchor="end" interval={0} />
+                      <YAxis allowDecimals={false} />
+                      <RechartsTooltip
+                        formatter={(value: number, _name, payload) => [value, payload?.payload?.range ?? ""]}
+                      />
+                      <Bar dataKey="count" fill="#6366f1" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </Card>
+            </Col>
+          </Row>
+
         </Space>
       )}
     </Card>

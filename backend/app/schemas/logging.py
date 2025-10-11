@@ -67,3 +67,29 @@ class BackendLogPage(BaseModel):
     page: int
     page_size: int
     items: list[BackendLogRecord]
+
+
+class BackendLogSummaryTopItem(BaseModel):
+    name: str
+    count: int
+
+
+class BackendLogSummaryLatest(BaseModel):
+    timestamp: datetime
+    level: str
+    logger_name: str | None = None
+    event: str | None = None
+    message: str
+    correlation_id: str | None = None
+    request_id: str | None = None
+
+
+class BackendLogSummary(BaseModel):
+    total: int
+    level_counts: dict[str, int]
+    top_loggers: list[BackendLogSummaryTopItem]
+    top_events: list[BackendLogSummaryTopItem]
+    latest_entry_at: datetime | None
+    latest_error: BackendLogSummaryLatest | None
+    latest_warning: BackendLogSummaryLatest | None
+    ingestion_lag_seconds: float | None

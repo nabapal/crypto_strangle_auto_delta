@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { ConfigProvider, App as AntApp } from "antd";
+import { App as AntApp } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "antd/dist/reset.css";
@@ -8,6 +8,7 @@ import "./styles.css";
 
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { ThemeProvider } from "./context/ThemeContext";
 import logger from "./utils/logger";
 
 const queryClient = new QueryClient();
@@ -19,7 +20,7 @@ logger.info("Frontend bootstrap", {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ConfigProvider theme={{ token: { colorPrimary: "#0e7490" } }}>
+    <ThemeProvider>
       <QueryClientProvider client={queryClient}>
         <AntApp>
           <ErrorBoundary>
@@ -27,6 +28,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
           </ErrorBoundary>
         </AntApp>
       </QueryClientProvider>
-    </ConfigProvider>
+    </ThemeProvider>
   </React.StrictMode>
 );

@@ -7,6 +7,7 @@ Enterprise dashboard to supervise the BTC/ETH short strangle automation.
 - Strategy configuration form with delta, schedule, risk, and trailing SL controls.
 - Trading command center to start/stop/restart the engine and monitor live sessions.
 - Advanced analytics with KPI tiles and PnL trend charts.
+- Light/Dark appearance toggle with stored user preference and Ant Design theming.
 - React + Ant Design + React Query for responsive UX.
 
 ## Getting Started

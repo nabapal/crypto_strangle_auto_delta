@@ -1,12 +1,47 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: "Inter", sans-serif;
-  background: #0f172a;
+  --layout-header-bg: #0f172a;
+  --layout-header-border: rgba(148, 163, 184, 0.18);
+  --layout-header-text: #f8fafc;
+  --layout-header-subtext: rgba(148, 163, 184, 0.85);
+  --layout-header-accent: #38bdf8;
+  --layout-header-button-bg: rgba(15, 23, 42, 0.6);
+  --layout-header-button-shadow: 0 16px 30px rgba(15, 23, 42, 0.45);
+  --layout-header-avatar-bg: rgba(56, 189, 248, 0.18);
+  --layout-content-bg: #f5f7fb;
+  --layout-page-bg: #f5f7fb;
+  --text-color-primary: #0f172a;
+  --card-background-soft: #f8fafc;
+  --card-border-color: #e2e8f0;
+  --table-row-selected-bg: #e0f2fe;
+  --table-row-active-bg: #f0fdfa;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --layout-header-bg: #0b1120;
+  --layout-header-border: rgba(148, 163, 184, 0.22);
+  --layout-header-text: #e2e8f0;
+  --layout-header-subtext: rgba(148, 163, 184, 0.78);
+  --layout-header-accent: #38bdf8;
+  --layout-header-button-bg: rgba(15, 23, 42, 0.72);
+  --layout-header-button-shadow: 0 16px 30px rgba(2, 6, 23, 0.65);
+  --layout-header-avatar-bg: rgba(56, 189, 248, 0.25);
+  --layout-content-bg: #020617;
+  --layout-page-bg: #020617;
+  --text-color-primary: #e2e8f0;
+  --card-background-soft: rgba(15, 23, 42, 0.72);
+  --card-border-color: rgba(148, 163, 184, 0.35);
+  --table-row-selected-bg: rgba(56, 189, 248, 0.16);
+  --table-row-active-bg: rgba(56, 189, 248, 0.08);
 }
 
 body {
   margin: 0;
-  background: #f5f7fb;
+  background: var(--layout-page-bg);
+  color: var(--text-color-primary);
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 #root {
@@ -14,9 +49,9 @@ body {
 }
 
 .config-row-selected td {
-  background: #e0f2fe !important;
+  background: var(--table-row-selected-bg) !important;
 }
 
 .config-row-active td {
-  background: #f0fdfa !important;
+  background: var(--table-row-active-bg) !important;
 }

@@ -61,6 +61,84 @@ export interface AnalyticsResponse {
   chart_data: Record<string, Array<Record<string, number>>>;
 }
 
+export interface AnalyticsChartPoint {
+  timestamp: string;
+  value: number;
+  meta?: Record<string, unknown> | null;
+}
+
+export interface AnalyticsHistogramBucket {
+  start: number;
+  end: number;
+  count: number;
+}
+
+export interface AnalyticsHistoryMetrics {
+  days_running: number;
+  trade_count: number;
+  win_count: number;
+  loss_count: number;
+  average_pnl: number;
+  average_win: number;
+  average_loss: number;
+  win_rate: number;
+  consecutive_wins: number;
+  consecutive_losses: number;
+  max_gain: number;
+  max_loss: number;
+  max_drawdown: number;
+}
+
+export interface AnalyticsHistoryCharts {
+  cumulative_pnl: AnalyticsChartPoint[];
+  drawdown: AnalyticsChartPoint[];
+  rolling_win_rate: AnalyticsChartPoint[];
+  trades_histogram: AnalyticsHistogramBucket[];
+}
+
+export interface AnalyticsTimelineEntry {
+  timestamp: string;
+  session_id: number;
+  order_id?: string | null;
+  position_id?: number | null;
+  symbol?: string | null;
+  side?: string | null;
+  quantity?: number | null;
+  price?: number | null;
+  fill_price?: number | null;
+  realized_pnl?: number | null;
+  unrealized_pnl?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AnalyticsHistoryStatus {
+  is_stale: boolean;
+  latest_timestamp?: string | null;
+  message?: string | null;
+}
+
+export interface AnalyticsHistoryRange {
+  start: string;
+  end: string;
+  preset?: string | null;
+}
+
+export interface AnalyticsHistoryResponse {
+  generated_at: string;
+  range: AnalyticsHistoryRange;
+  metrics: AnalyticsHistoryMetrics;
+  charts: AnalyticsHistoryCharts;
+  timeline: AnalyticsTimelineEntry[];
+  status: AnalyticsHistoryStatus;
+}
+
+export interface AnalyticsHistoryParams {
+  start?: string;
+  end?: string;
+  preset?: string;
+  strategy_id?: string;
+}
+
 export type StrategyStatus = "idle" | "waiting" | "entering" | "live" | "cooldown";
 
 export interface RuntimeSchedule {
@@ -167,6 +245,13 @@ export const fetchTradingSessionDetail = async (sessionId: number) => {
 
 export const fetchAnalytics = async () => {
   const response = await client.get<AnalyticsResponse>("/analytics/dashboard");
+  return response.data;
+};
+
+export const fetchAnalyticsHistory = async (params: AnalyticsHistoryParams) => {
+  const response = await client.get<AnalyticsHistoryResponse>("/analytics/history", {
+    params
+  });
   return response.data;
 };
 

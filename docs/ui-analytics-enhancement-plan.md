@@ -33,7 +33,7 @@ _Last updated: 2025-10-08_
 
 ### Advanced Analytics Enhancements
 
-- Date range selector (preset + custom) and strategy dropdown.
+- Date range selector (preset + custom)
 - Metrics: days running, trade counts, average profit/loss per trade, split averages for winners/losers, consecutive win/loss streaks, max gain/loss, max drawdown, average gain per winning trade, average loss per losing trade.
 - Charts: cumulative PnL, drawdown curve, rolling win rate, trades histogram.
 - Trade timeline with execution metadata and tooltips linking to raw order data.
