@@ -90,6 +90,12 @@ Optional enhancements for the script include adding health checks, rollback guid
 - **Log viewer**: Access the web UI at `https://<your-domain>/` and open the “Log Viewer” tab to query logs by level, event, correlation ID, date range, etc.
 - **Raw files**: `/app/logs/backend.log` remains on disk for troubleshooting; incorporate host-level rotation if desired (e.g., `logrotate`).
 
+## Analytics exports
+- **API endpoint**: `GET /api/analytics/export` streams a CSV snapshot of metrics and timeline events for the requested date range. Query parameters mirror the dashboard history filters (`start`, `end`, optional `preset`, `strategy_id`). Only the `format=csv` variant is enabled; other values return `422`.
+- **Authentication**: The endpoint is protected by the same JWT middleware as the rest of the analytics API. Ensure front-end tokens are valid prior to triggering downloads.
+- **Frontend flow**: The “Export CSV” button in the Advanced Analytics dashboard uses the endpoint above, shows a loading spinner, and prompts the browser to download files named `analytics-export-YYYYMMDD-HHMMSS.csv`.
+- **Operational notes**: CSV files are generated on the fly and not stored on disk; schedule internal QA checks to confirm spreadsheet headers (`metadata`, `metrics`, `timeline`) match expectations after each deployment. A regression on Oct 11, 2025 highlighted the importance of keeping backend schema imports aligned—tests now guard the streaming helper, but keep an eye on application logs after each deploy to catch similar issues early.
+
 ## Maintenance
 - **Updating code**: Re-run `./scripts/deploy_prod.sh` whenever new commits are available. The script automatically rebuilds images and restarts services.
 - **Restoring stashed changes**: If the script stashed modifications, review them with `git stash list` and reapply using `git stash pop <name>`.

@@ -1,7 +1,7 @@
 import { cloneElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 vi.mock("../../utils/logger", () => ({
   __esModule: true,
@@ -13,14 +13,16 @@ vi.mock("../../utils/logger", () => ({
   }
 }));
 
-const { fetchAnalyticsMock, fetchAnalyticsHistoryMock } = vi.hoisted(() => ({
+const { fetchAnalyticsMock, fetchAnalyticsHistoryMock, downloadAnalyticsExportMock } = vi.hoisted(() => ({
   fetchAnalyticsMock: vi.fn(),
-  fetchAnalyticsHistoryMock: vi.fn()
+  fetchAnalyticsHistoryMock: vi.fn(),
+  downloadAnalyticsExportMock: vi.fn()
 }));
 
 vi.mock("../../api/trading", () => ({
   fetchAnalytics: fetchAnalyticsMock,
-  fetchAnalyticsHistory: fetchAnalyticsHistoryMock
+  fetchAnalyticsHistory: fetchAnalyticsHistoryMock,
+  downloadAnalyticsExport: downloadAnalyticsExportMock
 }));
 
 vi.mock("recharts", async () => {
@@ -46,6 +48,7 @@ vi.mock("recharts", async () => {
 });
 
 import AnalyticsDashboard from "../AnalyticsDashboard";
+import { message } from "antd";
 
 const analyticsSnapshot = {
   generated_at: "2025-10-10T00:00:00Z",
@@ -106,16 +109,73 @@ describe("AnalyticsDashboard", () => {
         disconnect() {}
       }
     });
+
+    Object.defineProperty(window, "URL", {
+      writable: true,
+      value: {
+        createObjectURL: vi.fn(() => "blob://mock"),
+        revokeObjectURL: vi.fn()
+      }
+    });
+
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn()
+      }))
+    });
   });
 
   beforeEach(() => {
     fetchAnalyticsMock.mockResolvedValue(analyticsSnapshot);
     fetchAnalyticsHistoryMock.mockResolvedValue(analyticsHistory);
+    downloadAnalyticsExportMock.mockResolvedValue({
+      blob: new Blob(["timestamp,value"], { type: "text/csv" }),
+      filename: "analytics-export.csv"
+    });
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn()
+      }))
+    });
+    vi.spyOn(message, "success").mockImplementation(() => undefined as any);
+    vi.spyOn(message, "error").mockImplementation(() => undefined as any);
+    vi.spyOn(window, "getComputedStyle").mockImplementation(
+      () =>
+        ({
+          getPropertyValue: () => "",
+          setProperty: () => undefined,
+          removeProperty: () => "",
+          item: () => "",
+          getPropertyPriority: () => "",
+          length: 0,
+          fontSize: "14px"
+        }) as unknown as CSSStyleDeclaration
+    );
   });
 
   afterEach(() => {
     fetchAnalyticsMock.mockClear();
     fetchAnalyticsHistoryMock.mockClear();
+    downloadAnalyticsExportMock.mockClear();
+  (window.URL.createObjectURL as unknown as Mock).mockClear();
+  (window.URL.revokeObjectURL as unknown as Mock).mockClear();
+    vi.restoreAllMocks();
   });
 
   it("wires chart theming through CSS variables", async () => {
@@ -148,5 +208,30 @@ describe("AnalyticsDashboard", () => {
     expect(area).not.toBeNull();
   expect(negativeArea).not.toBeNull();
     expect(gradientStops.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("allows exporting analytics history as CSV", async () => {
+    const queryClient = new QueryClient();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AnalyticsDashboard />
+      </QueryClientProvider>
+    );
+
+    await screen.findByText(/Advanced Analytics/i);
+    const exportButton = await screen.findByRole("button", { name: /export csv/i });
+    fireEvent.click(exportButton);
+
+    await waitFor(() => expect(downloadAnalyticsExportMock).toHaveBeenCalledTimes(1));
+
+    expect(downloadAnalyticsExportMock).toHaveBeenCalledWith(expect.objectContaining({
+      start: expect.any(String),
+      end: expect.any(String)
+    }));
+
+    expect(window.URL.createObjectURL).toHaveBeenCalled();
+    expect(message.success).toHaveBeenCalledWith("Analytics export downloaded");
+    expect(message.error).not.toHaveBeenCalled();
   });
 });

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Optional
+from io import StringIO
+from typing import Iterable, Iterator, Optional, Sequence
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,6 +144,18 @@ class AnalyticsService:
             timeline=timeline,
             status=status,
         )
+
+    async def export_history_csv(
+        self,
+        start: datetime | None,
+        end: datetime | None,
+        strategy_id: str | None = None,
+        preset: str | None = None,
+    ) -> tuple[str, Iterator[str]]:
+        history = await self.history(start=start, end=end, strategy_id=strategy_id, preset=preset)
+        filename = self._build_export_filename(history.generated_at)
+        iterator = self._iter_csv_export(history, strategy_id=strategy_id)
+        return filename, iterator
 
     async def _total_realized_pnl(self) -> float:
         result = await self.session.execute(select(func.sum(PositionLedger.realized_pnl)))
@@ -358,7 +373,7 @@ class AnalyticsService:
         return orders
 
     def _compute_metrics(
-        self, sessions: list[StrategySession], start_dt: datetime, end_dt: datetime
+        self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
     ) -> AnalyticsHistoryMetrics:
         positions = self._filter_positions(sessions, start_dt, end_dt)
         metrics = AnalyticsHistoryMetrics()
@@ -430,7 +445,7 @@ class AnalyticsService:
         return metrics
 
     def _compute_charts(
-        self, sessions: list[StrategySession], start_dt: datetime, end_dt: datetime
+        self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
     ) -> AnalyticsHistoryCharts:
         positions = self._filter_positions(sessions, start_dt, end_dt)
         charts = AnalyticsHistoryCharts()
@@ -506,7 +521,7 @@ class AnalyticsService:
         return histogram
 
     def _build_timeline(
-        self, sessions: list[StrategySession], start_dt: datetime, end_dt: datetime
+        self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
     ) -> list[AnalyticsTimelineEntry]:
         orders = self._filter_orders(sessions, start_dt, end_dt)
         positions = self._filter_positions(sessions, start_dt, end_dt)
@@ -572,3 +587,86 @@ class AnalyticsService:
         if is_stale:
             message = f"Latest data is {int(age.total_seconds() // 60)} minutes old"
         return AnalyticsDataStatus(is_stale=is_stale, latest_timestamp=latest_ts, message=message)
+
+    def _build_export_filename(self, generated_at: datetime) -> str:
+        safe_timestamp = generated_at.astimezone(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        return f"analytics-export-{safe_timestamp}.csv"
+
+    def _iter_csv_export(self, history: AnalyticsHistoryResponse, strategy_id: str | None) -> Iterator[str]:
+        def writerow(row: Sequence[object]) -> str:
+            buffer = StringIO()
+            csv_writer = csv.writer(buffer)
+            csv_writer.writerow(row)
+            return buffer.getvalue()
+
+        def to_iso(value: Optional[datetime]) -> str:
+            if not value:
+                return ""
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc).isoformat()
+
+        yield writerow(["section", "field", "value"])
+
+        status: AnalyticsDataStatus = history.status
+        meta_rows = [
+            ["metadata", "generated_at", to_iso(history.generated_at)],
+            ["metadata", "start", to_iso(history.range.start)],
+            ["metadata", "end", to_iso(history.range.end)],
+            ["metadata", "preset", history.range.preset or ""],
+            ["metadata", "strategy_id", strategy_id or ""],
+            ["metadata", "record_count", len(history.timeline)],
+            ["metadata", "is_stale", status.is_stale],
+            ["metadata", "status_message", status.message or ""],
+            ["metadata", "latest_timestamp", to_iso(status.latest_timestamp)],
+        ]
+        for row in meta_rows:
+            yield writerow(row)
+
+        yield writerow([])
+
+        metrics_dict = history.metrics.dict()
+        for key, value in metrics_dict.items():
+            yield writerow(["metrics", key, value])
+
+        yield writerow([])
+
+        timeline_header = [
+            "timeline",
+            "timestamp",
+            "session_id",
+            "entry_type",
+            "order_id",
+            "position_id",
+            "symbol",
+            "side",
+            "quantity",
+            "price",
+            "fill_price",
+            "realized_pnl",
+            "unrealized_pnl",
+            "metadata",
+        ]
+        yield writerow(timeline_header)
+
+        for entry in history.timeline:
+            entry_type = "order" if entry.order_id else "position" if entry.position_id else "event"
+            metadata_json = json.dumps(entry.metadata or {}, separators=(",", ":"))
+            yield writerow(
+                [
+                    "timeline",
+                    to_iso(entry.timestamp),
+                    entry.session_id,
+                    entry_type,
+                    entry.order_id or "",
+                    entry.position_id or "",
+                    entry.symbol or "",
+                    entry.side or "",
+                    entry.quantity if entry.quantity is not None else "",
+                    entry.price if entry.price is not None else "",
+                    entry.fill_price if entry.fill_price is not None else "",
+                    entry.realized_pnl if entry.realized_pnl is not None else "",
+                    entry.unrealized_pnl if entry.unrealized_pnl is not None else "",
+                    metadata_json,
+                ]
+            )

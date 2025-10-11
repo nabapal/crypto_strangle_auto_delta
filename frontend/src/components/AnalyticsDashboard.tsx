@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dayjs, { Dayjs } from "dayjs";
-import { useQuery } from "@tanstack/react-query";
-import { Alert, Card, Col, DatePicker, Empty, Row, Segmented, Space, Switch, Tag, Typography } from "antd";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Alert, Button, Card, Col, DatePicker, Empty, Row, Segmented, Space, Switch, Tag, Typography, message } from "antd";
+import { DownloadOutlined } from "@ant-design/icons";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 
-import { AnalyticsChartPoint, AnalyticsHistoryResponse, fetchAnalytics, fetchAnalyticsHistory } from "../api/trading";
+import {
+  AnalyticsChartPoint,
+  AnalyticsHistoryParams,
+  AnalyticsHistoryResponse,
+  downloadAnalyticsExport,
+  fetchAnalytics,
+  fetchAnalyticsHistory
+} from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
 import logger from "../utils/logger";
 
@@ -132,6 +140,37 @@ export default function AnalyticsDashboard() {
   const isLoading = analyticsQuery.isLoading;
   const historyData: AnalyticsHistoryResponse | undefined = historyQuery.data;
   const isHistoryLoading = historyQuery.isLoading;
+
+  const exportMutation = useMutation({
+    mutationFn: (params: AnalyticsHistoryParams) => downloadAnalyticsExport(params),
+    onSuccess: ({ blob, filename }) => {
+      try {
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(blobUrl);
+        message.success("Analytics export downloaded");
+      } catch (error) {
+        logger.error("Failed to download analytics export", {
+          event: "ui_analytics_export_download_error",
+          error
+        });
+        message.error("Unable to download analytics export");
+      }
+    },
+    onError: (error: unknown) => {
+      const description = error instanceof Error ? error.message : "Unable to export analytics";
+      logger.error("Analytics export request failed", {
+        event: "ui_analytics_export_error",
+        message: description
+      });
+      message.error(description);
+    }
+  });
 
   const successRef = useRef<number>(0);
   const errorRef = useRef<string | null>(null);
@@ -358,6 +397,14 @@ export default function AnalyticsDashboard() {
               }
             }}
           />
+          <Button
+            icon={<DownloadOutlined />}
+            loading={exportMutation.isPending}
+            onClick={() => exportMutation.mutate({ ...historyParams })}
+            disabled={isHistoryLoading}
+          >
+            Export CSV
+          </Button>
           <Space size={4} align="center">
             <Text type="secondary">Auto refresh</Text>
             <Switch

@@ -139,6 +139,11 @@ export interface AnalyticsHistoryParams {
   strategy_id?: string;
 }
 
+export interface AnalyticsExportResult {
+  blob: Blob;
+  filename: string;
+}
+
 export type StrategyStatus = "idle" | "waiting" | "entering" | "live" | "cooldown";
 
 export interface RuntimeSchedule {
@@ -253,6 +258,47 @@ export const fetchAnalyticsHistory = async (params: AnalyticsHistoryParams) => {
     params
   });
   return response.data;
+};
+
+const parseFilenameFromDisposition = (value: string | null | undefined): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+    } catch {
+      return utf8Match[1].replace(/"/g, "");
+    }
+  }
+
+  const simpleMatch = value.match(/filename="?([^";]+)"?/i);
+  if (simpleMatch && simpleMatch[1]) {
+    return simpleMatch[1];
+  }
+
+  return undefined;
+};
+
+export const downloadAnalyticsExport = async (params: AnalyticsHistoryParams): Promise<AnalyticsExportResult> => {
+  const response = await client.get<Blob>("/analytics/export", {
+    params,
+    responseType: "blob"
+  });
+
+  const disposition = typeof response.headers.get === "function"
+    ? response.headers.get("content-disposition")
+    : (response.headers as Record<string, string | undefined>)["content-disposition"] ??
+      (response.headers as Record<string, string | undefined>)["Content-Disposition"];
+
+  const filename = parseFilenameFromDisposition(disposition) ?? "analytics-export.csv";
+
+  return {
+    blob: response.data,
+    filename
+  };
 };
 
 export const fetchRuntime = async () => {

@@ -9,6 +9,7 @@ Modernized control plane for automated BTC/ETH short strangle trading. The platf
 - Configuration CRUD with activation workflows and persistent strategy session metadata.
 - Lifecycle commands (start/stop/restart/panic) coordinated by the shared trading engine.
 - Analytics APIs producing KPI tiles, chart feeds, and trailing stop telemetry.
+- Streaming analytics export endpoint (`/api/analytics/export`) delivering CSV snapshots with metadata, metrics, and timeline rows.
 - Async SQLAlchemy data access with a SQLite default (swap the DSN for Postgres/MySQL in production).
 - Feature-flagged logging controls for structured tracing of Delta Exchange interactions.
 - Self-contained backend log ingestion service that tails `logs/backend.log`, stores entries in SQLite, and enforces retention windows.
