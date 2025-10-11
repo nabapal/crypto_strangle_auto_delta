@@ -19,6 +19,7 @@ Modernized control plane for automated BTC/ETH short strangle trading. The platf
 - Live control panel to monitor session status and trigger lifecycle commands.
 - History views summarizing PnL, legs, orders, and trailing performance.
 - Advanced analytics dashboards powered by Ant Design components and React Query.
+- Theme-aware dashboard with light/dark toggle and a persistent UTC/IST operations clock in the header.
 - Optional client-side logging hooks for deep troubleshooting.
 - Log Viewer tab for filtering backend events, searching correlation IDs, and expanding structured payloads without leaving the dashboard.
 

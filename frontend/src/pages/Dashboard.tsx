@@ -13,6 +13,7 @@ import { BellOutlined, LockOutlined, LogoutOutlined, UserOutlined } from "@ant-d
 import logger from "../utils/logger";
 import { useAuth } from "../context/AuthContext";
 import ThemeToggle from "../components/ThemeToggle";
+import TimeDisplay from "../components/TimeDisplay";
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
@@ -161,6 +162,7 @@ export default function Dashboard() {
             Delta Strangle Control Plane
           </Title>
           <Space size="large" align="center">
+            <TimeDisplay />
             <ThemeToggle />
             <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: accountMenuItems }}>
               <Tooltip placement="bottomRight" title={tooltipTitle} mouseEnterDelay={0.15} mouseLeaveDelay={0.1}>
