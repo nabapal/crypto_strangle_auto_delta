@@ -243,7 +243,12 @@ class TradingService:
         return snapshot
 
     async def get_sessions(self) -> list[StrategySession]:
-        result = await self.session.execute(select(StrategySession))
+        result = await self.session.execute(
+            select(StrategySession).order_by(
+                StrategySession.activated_at.desc().nullslast(),
+                StrategySession.id.desc(),
+            )
+        )
         return list(result.scalars().all())
 
     async def cleanup_sessions(self) -> int:

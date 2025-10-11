@@ -289,6 +289,20 @@ This script:
 
 ---
 
+## Enhancements Overview
+
+Detailed plans for the upcoming feature work (history ordering, dark-mode chart contrast, analytics export, and CI/CD automation) now live in `docs/enhancements.md`. Consult that document for phased milestones, validation criteria, and environment notes.
+
+Highlights:
+- **History Tab Ordering** – newest entries first with regression coverage.
+- **Dark Mode Chart Contrast** – theme tokens for axis labels and tooltips.
+- **Analytics Export** – CSV-first endpoint plus optional Excel support.
+- **CI/CD Pipeline** – local hooks, GitHub Actions workflow, and deployment guardrails.
+
+Refer to the enhancements document when creating tickets or coordinating releases; update both files if scope evolves.
+
+---
+
 ## Examples & Diagrams
 
 ### Sample API Usage

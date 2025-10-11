@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -94,3 +94,40 @@ async def test_cleanup_running_sessions_marks_all_stopped(db_session, auth_heade
     updated_sessions = refreshed.scalars().all()
     assert all(session.status == "stopped" for session in updated_sessions)
     assert all(session.deactivated_at is not None for session in updated_sessions)
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_returns_newest_first(db_session, auth_headers):
+    now = datetime.now(timezone.utc)
+    older = StrategySession(
+        strategy_id="history-older",
+        status="stopped",
+        activated_at=now - timedelta(hours=2),
+        deactivated_at=now - timedelta(hours=1),
+    )
+    newer = StrategySession(
+        strategy_id="history-newer",
+        status="stopped",
+        activated_at=now - timedelta(minutes=30),
+        deactivated_at=now - timedelta(minutes=10),
+    )
+    no_activation = StrategySession(
+        strategy_id="history-none",
+        status="running",
+        activated_at=None,
+    )
+
+    db_session.add_all([older, newer, no_activation])
+    await db_session.flush()
+    await db_session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", headers=auth_headers) as client:
+        response = await client.get("/api/trading/sessions")
+
+    assert response.status_code == 200
+    payload = response.json()
+    ids = [item["id"] for item in payload]
+
+    assert ids.index(newer.id) < ids.index(older.id)
+    assert ids.index(older.id) < ids.index(no_activation.id)

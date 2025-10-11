@@ -23,6 +23,20 @@
   --card-border-color: #e2e8f0;
   --table-row-selected-bg: #e0f2fe;
   --table-row-active-bg: #f0fdfa;
+  --chart-grid-stroke: rgba(15, 23, 42, 0.12);
+  --chart-axis-tick: #334155;
+  --chart-axis-line: rgba(15, 23, 42, 0.22);
+  --chart-tooltip-bg: #ffffff;
+  --chart-tooltip-border: rgba(15, 23, 42, 0.08);
+  --chart-tooltip-text: #0f172a;
+  --chart-tooltip-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+  --chart-area-positive-stroke: #0e7490;
+  --chart-area-positive-fill-strong: rgba(14, 116, 144, 0.45);
+  --chart-area-positive-fill-soft: rgba(14, 116, 144, 0.06);
+  --chart-area-negative-stroke: #f97316;
+  --chart-area-negative-fill: rgba(249, 115, 22, 0.32);
+  --chart-line-stroke: #15803d;
+  --chart-bar-fill: #4f46e5;
 }
 
 :root[data-theme="dark"] {
@@ -49,6 +63,20 @@
   --card-border-color: rgba(148, 163, 184, 0.35);
   --table-row-selected-bg: rgba(56, 189, 248, 0.16);
   --table-row-active-bg: rgba(56, 189, 248, 0.08);
+  --chart-grid-stroke: rgba(148, 163, 184, 0.28);
+  --chart-axis-tick: rgba(226, 232, 240, 0.82);
+  --chart-axis-line: rgba(148, 163, 184, 0.35);
+  --chart-tooltip-bg: rgba(15, 23, 42, 0.92);
+  --chart-tooltip-border: rgba(148, 163, 184, 0.42);
+  --chart-tooltip-text: #e2e8f0;
+  --chart-tooltip-shadow: 0 20px 40px rgba(2, 6, 23, 0.65);
+  --chart-area-positive-stroke: #38bdf8;
+  --chart-area-positive-fill-strong: rgba(56, 189, 248, 0.5);
+  --chart-area-positive-fill-soft: rgba(56, 189, 248, 0.12);
+  --chart-area-negative-stroke: #fb923c;
+  --chart-area-negative-fill: rgba(251, 146, 60, 0.35);
+  --chart-line-stroke: #4ade80;
+  --chart-bar-fill: #8b5cf6;
 }
 
 body {

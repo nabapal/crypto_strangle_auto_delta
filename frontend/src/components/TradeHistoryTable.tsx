@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Button,
@@ -104,6 +104,23 @@ export default function TradeHistoryTable() {
 
   const data = sessionsQuery.data;
   const isLoading = sessionsQuery.isLoading;
+
+  const sortedSessions = useMemo(() => {
+    if (!data) {
+      return [] as TradingSessionSummary[];
+    }
+
+    return [...data].sort((a, b) => {
+      const aTime = a.activated_at ? new Date(a.activated_at).getTime() : Number.NEGATIVE_INFINITY;
+      const bTime = b.activated_at ? new Date(b.activated_at).getTime() : Number.NEGATIVE_INFINITY;
+
+      if (bTime !== aTime) {
+        return bTime - aTime;
+      }
+
+      return (b.id ?? 0) - (a.id ?? 0);
+    });
+  }, [data]);
 
   const detailQuery = useQuery<TradingSessionDetail>({
     queryKey: ["session-detail", selectedSessionId],
@@ -432,7 +449,7 @@ export default function TradeHistoryTable() {
   return (
     <>
       <Card loading={isLoading} title={<Title level={4}>Historical Sessions</Title>}>
-        <Table rowKey="id" dataSource={data ?? []} columns={columns} pagination={false} />
+  <Table rowKey="id" dataSource={sortedSessions} columns={columns} pagination={false} />
       </Card>
       <Drawer
         title={detail ? `Session ${detail.strategy_id}` : "Session Details"}

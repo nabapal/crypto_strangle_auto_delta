@@ -81,6 +81,13 @@ const toChartData = (points: AnalyticsChartPoint[], valueKey = "value") =>
     meta: point.meta ?? undefined
   }));
 
+type MetricCardConfig = {
+  label: string;
+  value: number;
+  formatter: (value: number) => string;
+  subtext?: string;
+};
+
 export default function AnalyticsDashboard() {
 
   const [preset, setPreset] = useState<RangePreset>("30d");
@@ -156,62 +163,110 @@ export default function AnalyticsDashboard() {
     }
   }, [analyticsQuery.data, analyticsQuery.dataUpdatedAt, analyticsQuery.error]);
 
+  const totalPnlSnapshot = useMemo(() => {
+    const kpis = analyticsQuery.data?.kpis;
+    if (!kpis?.length) {
+      return null;
+    }
+
+    const normalize = (label: string | undefined) => (label ?? "").toLowerCase();
+    const direct = kpis.find((kpi) => {
+      const label = normalize(kpi.label);
+      return label.includes("total pnl") || label.includes("net pnl");
+    });
+    if (direct && typeof direct.value === "number" && !Number.isNaN(direct.value)) {
+      return { label: direct.label ?? "Total PnL", value: direct.value };
+    }
+
+    const realized = kpis.find((kpi) => normalize(kpi.label).includes("realized"));
+    const unrealized = kpis.find((kpi) => normalize(kpi.label).includes("unrealized"));
+    if (realized || unrealized) {
+      const realizedValue = typeof realized?.value === "number" && !Number.isNaN(realized.value) ? realized.value : 0;
+      const unrealizedValue =
+        typeof unrealized?.value === "number" && !Number.isNaN(unrealized.value) ? unrealized.value : 0;
+      return {
+        label: "Total PnL",
+        value: realizedValue + unrealizedValue
+      };
+    }
+
+    return null;
+  }, [analyticsQuery.data?.kpis]);
+
+  const totalPnlAsOf = analyticsQuery.data?.generated_at;
+
   const metrics = historyData?.metrics;
-  const metricsCards = useMemo(
-    () =>
-      metrics
-        ? [
-            { label: "Days Running", value: metrics.days_running, formatter: (val: number) => formatNumber(val) },
-            { label: "Trade Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) },
-            {
-              label: "Average PnL / Trade",
-              value: metrics.average_pnl,
-              formatter: (val: number) => formatNumber(val, { style: "currency" })
-            },
-            {
-              label: "Average Win",
-              value: metrics.average_win,
-              formatter: (val: number) => formatNumber(val, { style: "currency" })
-            },
-            {
-              label: "Average Loss",
-              value: metrics.average_loss,
-              formatter: (val: number) => formatNumber(val, { style: "currency" })
-            },
-            {
-              label: "Win Rate",
-              value: metrics.win_rate,
-              formatter: (val: number) => formatNumber(val, { style: "percent", maximumFractionDigits: 2 })
-            },
-            {
-              label: "Max Gain",
-              value: metrics.max_gain,
-              formatter: (val: number) => formatNumber(val, { style: "currency" })
-            },
-            {
-              label: "Max Loss",
-              value: metrics.max_loss,
-              formatter: (val: number) => formatNumber(val, { style: "currency" })
-            },
-            {
-              label: "Max Drawdown",
-              value: metrics.max_drawdown,
-              formatter: (val: number) => formatNumber(val, { style: "currency" })
-            },
-            {
-              label: "Win Streak",
-              value: metrics.consecutive_wins,
-              formatter: (val: number) => formatNumber(val)
-            },
-            {
-              label: "Loss Streak",
-              value: metrics.consecutive_losses,
-              formatter: (val: number) => formatNumber(val)
-            }
-          ]
-        : [],
-    [metrics]
-  );
+  const totalPnlSubtext = totalPnlAsOf ? `As of ${formatTimestamp(totalPnlAsOf)}` : undefined;
+
+  const metricsCards = useMemo<MetricCardConfig[]>(() => {
+    if (!metrics) {
+      return [];
+    }
+
+    const baseCards: MetricCardConfig[] = [
+      { label: "Days Running", value: metrics.days_running, formatter: (val: number) => formatNumber(val) },
+      { label: "Trade Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) },
+      {
+        label: "Average PnL / Trade",
+        value: metrics.average_pnl,
+        formatter: (val: number) => formatNumber(val, { style: "currency" })
+      },
+      {
+        label: "Average Win",
+        value: metrics.average_win,
+        formatter: (val: number) => formatNumber(val, { style: "currency" })
+      },
+      {
+        label: "Average Loss",
+        value: metrics.average_loss,
+        formatter: (val: number) => formatNumber(val, { style: "currency" })
+      },
+      {
+        label: "Win Rate",
+        value: metrics.win_rate,
+        formatter: (val: number) => formatNumber(val, { style: "percent", maximumFractionDigits: 2 })
+      },
+      {
+        label: "Max Gain",
+        value: metrics.max_gain,
+        formatter: (val: number) => formatNumber(val, { style: "currency" })
+      },
+      {
+        label: "Max Loss",
+        value: metrics.max_loss,
+        formatter: (val: number) => formatNumber(val, { style: "currency" })
+      },
+      {
+        label: "Max Drawdown",
+        value: metrics.max_drawdown,
+        formatter: (val: number) => formatNumber(val, { style: "currency" })
+      },
+      {
+        label: "Win Streak",
+        value: metrics.consecutive_wins,
+        formatter: (val: number) => formatNumber(val)
+      },
+      {
+        label: "Loss Streak",
+        value: metrics.consecutive_losses,
+        formatter: (val: number) => formatNumber(val)
+      }
+    ];
+
+    if (totalPnlSnapshot) {
+      return [
+        {
+          label: totalPnlSnapshot.label,
+          value: totalPnlSnapshot.value,
+          formatter: (val: number) => formatNumber(val, { style: "currency" }),
+          subtext: totalPnlSubtext
+        },
+        ...baseCards
+      ];
+    }
+
+    return baseCards;
+  }, [metrics, totalPnlSnapshot, totalPnlSubtext]);
 
   const chartsData = useMemo(() => {
     if (!historyData) {
@@ -237,6 +292,44 @@ export default function AnalyticsDashboard() {
   const hasHistory = Boolean(historyData);
 
   const autoRefreshLabel = autoRefresh ? "On" : "Off";
+  const totalPnlTagValue = totalPnlSnapshot
+    ? formatNumber(totalPnlSnapshot.value, { style: "currency" })
+    : null;
+  const totalPnlTagColor = totalPnlSnapshot
+    ? totalPnlSnapshot.value > 0
+      ? "green"
+      : totalPnlSnapshot.value < 0
+        ? "volcano"
+        : "default"
+    : undefined;
+
+  const tooltipContentStyle = useMemo(
+    () => ({
+      background: "var(--chart-tooltip-bg)",
+      border: "1px solid var(--chart-tooltip-border)",
+      borderRadius: 8,
+      boxShadow: "var(--chart-tooltip-shadow)",
+      color: "var(--chart-tooltip-text)",
+      fontSize: 12,
+      padding: "10px 12px"
+    }),
+    []
+  );
+
+  const tooltipLabelStyle = useMemo(
+    () => ({
+      color: "var(--chart-tooltip-text)",
+      fontWeight: 600
+    }),
+    []
+  );
+
+  const tooltipItemStyle = useMemo(
+    () => ({
+      color: "var(--chart-tooltip-text)"
+    }),
+    []
+  );
 
   return (
     <Card
@@ -311,6 +404,11 @@ export default function AnalyticsDashboard() {
             </Col>
             <Col>
               <Space size={8}>
+                {totalPnlTagValue && (
+                  <Tag color={totalPnlTagColor ?? "default"}>
+                    Total PnL: {totalPnlTagValue}
+                  </Tag>
+                )}
                 <Tag color="cyan">Trades: {historyData.metrics.trade_count}</Tag>
                 <Tag color="purple">Win rate: {historyData.metrics.win_rate.toFixed(2)}%</Tag>
               </Space>
@@ -335,6 +433,11 @@ export default function AnalyticsDashboard() {
                     <Title level={4} style={{ margin: 0 }}>
                       {metric.formatter(metric.value)}
                     </Title>
+                    {metric.subtext && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {metric.subtext}
+                      </Text>
+                    )}
                   </Space>
                 </Card>
               </Col>
@@ -348,18 +451,39 @@ export default function AnalyticsDashboard() {
                   <AreaChart data={chartsData.cumulative}>
                     <defs>
                       <linearGradient id="pnlGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.8} />
-                        <stop offset="95%" stopColor="#38bdf8" stopOpacity={0} />
+                        <stop offset="5%" stopColor="var(--chart-area-positive-fill-strong)" stopOpacity={1} />
+                        <stop offset="95%" stopColor="var(--chart-area-positive-fill-soft)" stopOpacity={1} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                    <XAxis dataKey="timestamp" tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")} />
-                    <YAxis tickFormatter={(value) => currencyFormatter.format(value).replace("$", "")} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke)" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")}
+                      tick={{ fill: "var(--chart-axis-tick)" }}
+                      axisLine={{ stroke: "var(--chart-axis-line)" }}
+                      tickLine={{ stroke: "var(--chart-axis-line)" }}
+                    />
+                    <YAxis
+                      tickFormatter={(value) => currencyFormatter.format(value).replace("$", "")}
+                      tick={{ fill: "var(--chart-axis-tick)" }}
+                      axisLine={{ stroke: "var(--chart-axis-line)" }}
+                      tickLine={{ stroke: "var(--chart-axis-line)" }}
+                    />
                     <RechartsTooltip
                       formatter={(value: number) => currencyFormatter.format(value)}
                       labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
+                      contentStyle={tooltipContentStyle}
+                      labelStyle={tooltipLabelStyle}
+                      itemStyle={tooltipItemStyle}
                     />
-                    <Area type="monotone" dataKey="value" stroke="#0ea5e9" fillOpacity={1} fill="url(#pnlGradient)" />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--chart-area-positive-stroke)"
+                      strokeWidth={2}
+                      fillOpacity={1}
+                      fill="url(#pnlGradient)"
+                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </Card>
@@ -369,14 +493,35 @@ export default function AnalyticsDashboard() {
               <Card title="Drawdown Curve" bordered>
                 <ResponsiveContainer width="100%" height={280}>
                   <AreaChart data={chartsData.drawdown}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                    <XAxis dataKey="timestamp" tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")} />
-                    <YAxis tickFormatter={(value) => currencyFormatter.format(value).replace("$", "")} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke)" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")}
+                      tick={{ fill: "var(--chart-axis-tick)" }}
+                      axisLine={{ stroke: "var(--chart-axis-line)" }}
+                      tickLine={{ stroke: "var(--chart-axis-line)" }}
+                    />
+                    <YAxis
+                      tickFormatter={(value) => currencyFormatter.format(value).replace("$", "")}
+                      tick={{ fill: "var(--chart-axis-tick)" }}
+                      axisLine={{ stroke: "var(--chart-axis-line)" }}
+                      tickLine={{ stroke: "var(--chart-axis-line)" }}
+                    />
                     <RechartsTooltip
                       formatter={(value: number) => currencyFormatter.format(value)}
                       labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
+                      contentStyle={tooltipContentStyle}
+                      labelStyle={tooltipLabelStyle}
+                      itemStyle={tooltipItemStyle}
                     />
-                    <Area type="monotone" dataKey="value" stroke="#f97316" fill="#fb923c" fillOpacity={0.4} />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--chart-area-negative-stroke)"
+                      strokeWidth={2}
+                      fill="var(--chart-area-negative-fill)"
+                      fillOpacity={1}
+                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </Card>
@@ -388,14 +533,35 @@ export default function AnalyticsDashboard() {
               <Card title="Rolling Win Rate" bordered>
                 <ResponsiveContainer width="100%" height={240}>
                   <LineChart data={chartsData.winRate}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                    <XAxis dataKey="timestamp" tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")} />
-                    <YAxis domain={[0, 100]} tickFormatter={(value) => `${value.toFixed(0)}%`} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke)" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")}
+                      tick={{ fill: "var(--chart-axis-tick)" }}
+                      axisLine={{ stroke: "var(--chart-axis-line)" }}
+                      tickLine={{ stroke: "var(--chart-axis-line)" }}
+                    />
+                    <YAxis
+                      domain={[0, 100]}
+                      tickFormatter={(value) => `${value.toFixed(0)}%`}
+                      tick={{ fill: "var(--chart-axis-tick)" }}
+                      axisLine={{ stroke: "var(--chart-axis-line)" }}
+                      tickLine={{ stroke: "var(--chart-axis-line)" }}
+                    />
                     <RechartsTooltip
                       formatter={(value: number) => `${value.toFixed(2)}%`}
                       labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
+                      contentStyle={tooltipContentStyle}
+                      labelStyle={tooltipLabelStyle}
+                      itemStyle={tooltipItemStyle}
                     />
-                    <Line type="monotone" dataKey="value" stroke="#22c55e" strokeWidth={2} dot={false} />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--chart-line-stroke)"
+                      strokeWidth={2}
+                      dot={false}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </Card>
@@ -408,13 +574,29 @@ export default function AnalyticsDashboard() {
                 ) : (
                   <ResponsiveContainer width="100%" height={240}>
                     <BarChart data={chartsData.histogram}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                      <XAxis dataKey="range" angle={-20} textAnchor="end" interval={0} />
-                      <YAxis allowDecimals={false} />
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke)" />
+                      <XAxis
+                        dataKey="range"
+                        angle={-20}
+                        textAnchor="end"
+                        interval={0}
+                        tick={{ fill: "var(--chart-axis-tick)" }}
+                        axisLine={{ stroke: "var(--chart-axis-line)" }}
+                        tickLine={{ stroke: "var(--chart-axis-line)" }}
+                      />
+                      <YAxis
+                        allowDecimals={false}
+                        tick={{ fill: "var(--chart-axis-tick)" }}
+                        axisLine={{ stroke: "var(--chart-axis-line)" }}
+                        tickLine={{ stroke: "var(--chart-axis-line)" }}
+                      />
                       <RechartsTooltip
                         formatter={(value: number, _name, payload) => [value, payload?.payload?.range ?? ""]}
+                        contentStyle={tooltipContentStyle}
+                        labelStyle={tooltipLabelStyle}
+                        itemStyle={tooltipItemStyle}
                       />
-                      <Bar dataKey="count" fill="#6366f1" />
+                      <Bar dataKey="count" fill="var(--chart-bar-fill)" />
                     </BarChart>
                   </ResponsiveContainer>
                 )}
