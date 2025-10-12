@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+import csv
+import json
+import time
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List
+from io import StringIO
+from typing import AsyncIterator, Dict, List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +41,12 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _to_iso(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return _ensure_utc(value).isoformat()
 
 
 def _build_backend_log_filters(
@@ -178,6 +189,130 @@ async def list_backend_logs(
 
     items = [BackendLogRecord.model_validate(row) for row in rows]
     return BackendLogPage(total=total, page=page, page_size=page_size, items=items)
+
+
+@router.get("/backend/export")
+async def export_backend_logs(
+    level: str | None = Query(None, max_length=16),
+    event: str | None = Query(None, max_length=128),
+    correlation_id: str | None = Query(None, alias="correlationId", max_length=128),
+    logger_name: str | None = Query(None, alias="logger", max_length=128),
+    search: str | None = Query(None, max_length=256),
+    start_time: datetime | None = Query(None, alias="startTime"),
+    end_time: datetime | None = Query(None, alias="endTime"),
+    session: AsyncSession = Depends(get_db_session),
+    _: None = Depends(get_current_active_user),
+):
+    filters = _build_backend_log_filters(
+        level=level,
+        event=event,
+        correlation_id=correlation_id,
+        logger_name=logger_name,
+        search=search,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    stmt = select(BackendLogEntry).order_by(BackendLogEntry.logged_at.desc())
+    if filters:
+        stmt = stmt.where(*filters)
+
+    filename = datetime.now(timezone.utc).strftime("backend-logs-export-%Y%m%d-%H%M%S.csv")
+    started = time.perf_counter()
+    filters_payload = {
+        "level": level,
+        "event": event,
+        "correlation_id": correlation_id,
+        "logger_name": logger_name,
+        "search": search,
+        "start_time": _to_iso(start_time) if start_time else None,
+        "end_time": _to_iso(end_time) if end_time else None,
+    }
+
+    async def stream() -> AsyncIterator[str]:
+        chunk_size = 500
+        offset = 0
+        exported = 0
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+
+        header = [
+            "id",
+            "logged_at",
+            "ingested_at",
+            "level",
+            "logger_name",
+            "event",
+            "message",
+            "correlation_id",
+            "request_id",
+            "line_hash",
+            "payload",
+        ]
+        writer.writerow(header)
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+
+        try:
+            while True:
+                chunk_stmt = stmt.offset(offset).limit(chunk_size)
+                result = await session.execute(chunk_stmt)
+                rows = result.scalars().all()
+                if not rows:
+                    break
+
+                for row in rows:
+                    writer.writerow(
+                        [
+                            row.id,
+                            _to_iso(row.logged_at),
+                            _to_iso(row.ingested_at),
+                            row.level,
+                            row.logger_name,
+                            row.event or "",
+                            row.message,
+                            row.correlation_id or "",
+                            row.request_id or "",
+                            row.line_hash,
+                            json.dumps(row.payload, ensure_ascii=False, separators=(",", ":")) if row.payload else "",
+                        ]
+                    )
+
+                exported += len(rows)
+                yield buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+                offset += len(rows)
+
+            duration_ms = (time.perf_counter() - started) * 1000
+            logger.info(
+                "Backend logs export generated",
+                extra={
+                    "event": "backend_logs_export_completed",
+                    "exported_records": exported,
+                    "duration_ms": round(duration_ms, 3),
+                    **{f"filter_{key}": value for key, value in filters_payload.items() if value is not None},
+                },
+            )
+        except Exception:
+            duration_ms = (time.perf_counter() - started) * 1000
+            logger.exception(
+                "Backend logs export failed",
+                extra={
+                    "event": "backend_logs_export_failed",
+                    "exported_records": exported,
+                    "duration_ms": round(duration_ms, 3),
+                    **{f"filter_{key}": value for key, value in filters_payload.items() if value is not None},
+                },
+            )
+            raise
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(stream(), media_type="text/csv", headers=headers)
 
 
 @router.get("/backend/summary", response_model=BackendLogSummary)

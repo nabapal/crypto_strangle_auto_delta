@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -152,10 +153,42 @@ class AnalyticsService:
         strategy_id: str | None = None,
         preset: str | None = None,
     ) -> tuple[str, Iterator[str]]:
-        history = await self.history(start=start, end=end, strategy_id=strategy_id, preset=preset)
-        filename = self._build_export_filename(history.generated_at)
-        iterator = self._iter_csv_export(history, strategy_id=strategy_id)
-        return filename, iterator
+        started = time.perf_counter()
+        try:
+            history = await self.history(start=start, end=end, strategy_id=strategy_id, preset=preset)
+            filename = self._build_export_filename(history.generated_at)
+            iterator = self._iter_csv_export(history, strategy_id=strategy_id)
+
+            duration_ms = (time.perf_counter() - started) * 1000
+            logger.info(
+                "Analytics history export generated",
+                extra={
+                    "event": "analytics_export_completed",
+                    "format": "csv",
+                    "duration_ms": round(duration_ms, 3),
+                    "strategy_id": strategy_id,
+                    "preset": preset,
+                    "timeline_records": len(history.timeline),
+                    "range_start": history.range.start.isoformat(),
+                    "range_end": history.range.end.isoformat(),
+                },
+            )
+            return filename, iterator
+        except Exception:
+            duration_ms = (time.perf_counter() - started) * 1000
+            logger.exception(
+                "Analytics history export failed",
+                extra={
+                    "event": "analytics_export_failed",
+                    "format": "csv",
+                    "duration_ms": round(duration_ms, 3),
+                    "strategy_id": strategy_id,
+                    "preset": preset,
+                    "range_start": start.isoformat() if isinstance(start, datetime) else None,
+                    "range_end": end.isoformat() if isinstance(end, datetime) else None,
+                },
+            )
+            raise
 
     async def _total_realized_pnl(self) -> float:
         result = await self.session.execute(select(func.sum(PositionLedger.realized_pnl)))

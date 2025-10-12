@@ -132,10 +132,11 @@ Each phase below describes scope, implementation notes, success criteria, and fo
 **Dependencies**
 - Access to logging/monitoring stack (e.g., CloudWatch, Sentry, Datadog).
 
-**Status Update (Oct 12, 2025 – early morning)**
+**Status Update (Oct 12, 2025 – morning)**
 - Refreshed `docs/deployment.md` with analytics export usage guidance, authentication requirements, and operational notes following the hotfix.
 - Added a remediation summary to this roadmap so future phases understand the regression context.
-- Remaining action: draft an observability playbook for export latency alerts once monitoring hooks are in place.
+- Instrumented the analytics export service with structured success/failure logs that capture duration, record counts, and range metadata.
+- Authored `docs/runbooks/analytics-export.md` detailing monitoring thresholds, remediation steps, and escalation paths.
 
 ## CI/CD Pipeline Blueprint
 
@@ -167,7 +168,7 @@ Each phase below describes scope, implementation notes, success criteria, and fo
 - [x] Backend ordering logic updated and covered by tests.
 - [x] Dark-mode color tokens applied and validated.
 - [x] Export endpoint and UI integrated, with download tests.
-- [x] Documentation refreshed and observability hooks in place (observability playbook in progress).
+- [x] Documentation refreshed and observability hooks in place.
 - [ ] CI/CD workflow merged and branch protection enabled.
 
 Track progress with issue labels (e.g., `phase-1`, `phase-2`) and summarize milestones in release notes.

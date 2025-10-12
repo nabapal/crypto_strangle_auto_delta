@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Card, DatePicker, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, Button, Statistic, Row, Col } from "antd";
+import { Card, DatePicker, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, Button, Statistic, Row, Col, message } from "antd";
+import { DownloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import dayjs, { Dayjs, ManipulateType } from "dayjs";
 
 import {
+  downloadBackendLogsExport,
   fetchBackendLogs,
   fetchBackendLogSummary,
+  type BackendLogExportResult,
   type BackendLogFilters,
   type BackendLogRecord,
   type BackendLogSummary,
@@ -85,6 +88,41 @@ export default function LogViewer() {
     queryFn: () => fetchBackendLogSummary(summaryFilters)
   });
   const { data: summary, isLoading: isSummaryLoading, isFetching: isSummaryFetching, refetch: refetchSummary } = summaryQuery;
+
+  const exportMutation = useMutation<BackendLogExportResult, Error, BackendLogFilters>({
+    mutationFn: (params) => downloadBackendLogsExport(params),
+    onSuccess: ({ blob, filename }) => {
+      try {
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(blobUrl);
+        message.success("Backend logs export downloaded");
+        logger.info("Backend logs export downloaded", {
+          event: "ui_backend_logs_export_success",
+          ...summaryFilters
+        });
+      } catch (error) {
+        logger.error("Failed to trigger backend logs download", {
+          event: "ui_backend_logs_export_download_error",
+          error
+        });
+        message.error("Unable to download backend logs export");
+      }
+    },
+    onError: (error) => {
+      const description = error instanceof Error ? error.message : "Unable to export backend logs";
+      logger.error("Backend logs export request failed", {
+        event: "ui_backend_logs_export_error",
+        message: description
+      });
+      message.error(description);
+    }
+  });
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -292,6 +330,13 @@ export default function LogViewer() {
           />
           <Button onClick={handleManualRefresh} loading={combinedFetching}>
             Refresh
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            loading={exportMutation.isPending}
+            onClick={() => exportMutation.mutate({ ...summaryFilters })}
+          >
+            Export CSV
           </Button>
         </Space>
       }

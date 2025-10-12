@@ -1,4 +1,4 @@
-import { cloneElement } from "react";
+import { cloneElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -25,10 +25,16 @@ vi.mock("../../api/trading", () => ({
   downloadAnalyticsExport: downloadAnalyticsExportMock
 }));
 
+type MockResponsiveContainerProps = {
+  width?: number | string;
+  height?: number | string;
+  children: ReactNode | ((dimensions: { width: number; height: number }) => ReactNode);
+};
+
 vi.mock("recharts", async () => {
   const actual = await vi.importActual<typeof import("recharts")>("recharts");
 
-  const MockResponsiveContainer = ({ width, height, children }: any) => {
+  const MockResponsiveContainer = ({ width, height, children }: MockResponsiveContainerProps) => {
     const resolvedWidth = typeof width === "number" ? width : 800;
     const resolvedHeight = typeof height === "number" ? height : 400;
 
@@ -49,6 +55,7 @@ vi.mock("recharts", async () => {
 
 import AnalyticsDashboard from "../AnalyticsDashboard";
 import { message } from "antd";
+import type { MessageType } from "antd/es/message/interface";
 
 const analyticsSnapshot = {
   generated_at: "2025-10-10T00:00:00Z",
@@ -153,8 +160,8 @@ describe("AnalyticsDashboard", () => {
         dispatchEvent: vi.fn()
       }))
     });
-    vi.spyOn(message, "success").mockImplementation(() => undefined as any);
-    vi.spyOn(message, "error").mockImplementation(() => undefined as any);
+  vi.spyOn(message, "success").mockReturnValue({} as MessageType);
+  vi.spyOn(message, "error").mockReturnValue({} as MessageType);
     vi.spyOn(window, "getComputedStyle").mockImplementation(
       () =>
         ({

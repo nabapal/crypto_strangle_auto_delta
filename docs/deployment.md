@@ -95,6 +95,7 @@ Optional enhancements for the script include adding health checks, rollback guid
 - **Authentication**: The endpoint is protected by the same JWT middleware as the rest of the analytics API. Ensure front-end tokens are valid prior to triggering downloads.
 - **Frontend flow**: The “Export CSV” button in the Advanced Analytics dashboard uses the endpoint above, shows a loading spinner, and prompts the browser to download files named `analytics-export-YYYYMMDD-HHMMSS.csv`.
 - **Operational notes**: CSV files are generated on the fly and not stored on disk; schedule internal QA checks to confirm spreadsheet headers (`metadata`, `metrics`, `timeline`) match expectations after each deployment. A regression on Oct 11, 2025 highlighted the importance of keeping backend schema imports aligned—tests now guard the streaming helper, but keep an eye on application logs after each deploy to catch similar issues early.
+- **Runbook**: See `docs/runbooks/analytics-export.md` for monitoring thresholds, remediation steps, and escalation guidance.
 
 ## Maintenance
 - **Updating code**: Re-run `./scripts/deploy_prod.sh` whenever new commits are available. The script automatically rebuilds images and restarts services.

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import io
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -115,6 +119,93 @@ async def test_backend_logs_summary_endpoint(monkeypatch, auth_headers):
     async with async_session() as session:
         await session.execute(delete(BackendLogEntry))
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_backend_logs_export_endpoint(monkeypatch, auth_headers, caplog):
+    monkeypatch.setenv("BACKEND_LOG_INGEST_ENABLED", "false")
+    monkeypatch.setenv("BACKEND_LOG_RETENTION_DAYS", "0")
+    get_settings.cache_clear()  # type: ignore[attr-defined]
+
+    app = create_app()
+
+    base_time = datetime(2025, 10, 11, 12, 0, 0, tzinfo=timezone.utc)
+    times = [base_time, base_time - timedelta(minutes=5), base_time - timedelta(minutes=15)]
+
+    async with async_session() as session:
+        await session.execute(delete(BackendLogEntry))
+        await session.commit()
+
+        entries = []
+        for index, logged_at in enumerate(times):
+            message = f"Log message {index}"
+            entries.append(
+                BackendLogEntry(
+                    logged_at=logged_at,
+                    ingested_at=logged_at,
+                    level="ERROR" if index == 0 else "INFO",
+                    logger_name="app.export",
+                    event=f"event.{index}",
+                    message=message,
+                    correlation_id=f"corr-{index}",
+                    request_id=f"req-{index}",
+                    line_hash=hashlib.sha1(message.encode()).hexdigest(),
+                    payload={"message": message, "index": index},
+                )
+            )
+        session.add_all(entries)
+        await session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver", headers=auth_headers) as client:
+        with caplog.at_level(logging.INFO, logger="app.logs"):
+            response = await client.get(
+                "/api/logs/backend/export",
+                params={"startTime": (base_time - timedelta(minutes=20)).isoformat()},
+            )
+
+        assert response.status_code == 200
+        content_disposition = response.headers.get("content-disposition", "")
+        assert content_disposition.startswith("attachment; filename=\"backend-logs-export-")
+        assert response.headers.get("cache-control") == "no-store"
+        assert response.headers.get("content-type", "").startswith("text/csv")
+
+        reader = csv.reader(io.StringIO(response.text))
+        rows = [row for row in reader if row]
+        assert rows[0] == [
+            "id",
+            "logged_at",
+            "ingested_at",
+            "level",
+            "logger_name",
+            "event",
+            "message",
+            "correlation_id",
+            "request_id",
+            "line_hash",
+            "payload",
+        ]
+
+        data_rows = rows[1:]
+        assert len(data_rows) == 3
+        logged_times = [row[1] for row in data_rows]
+        assert logged_times == sorted(logged_times, reverse=True)
+        assert data_rows[0][6] == "Log message 0"
+        assert json.loads(data_rows[0][10]) == {"message": "Log message 0", "index": 0}
+
+        export_logs = [record for record in caplog.records if getattr(record, "event", None) == "backend_logs_export_completed"]
+        assert export_logs, "expected backend_logs_export_completed log entry"
+        export_event = export_logs[-1]
+        assert export_event.exported_records == 3
+        assert export_event.duration_ms >= 0
+
+    async with async_session() as session:
+        await session.execute(delete(BackendLogEntry))
+        await session.commit()
+
+        now = datetime(2025, 10, 12, 12, 0, 0, tzinfo=timezone.utc)
+        warn_time = now - timedelta(minutes=10)
+        info_time = now - timedelta(minutes=20)
 
         entries = [
             BackendLogEntry(

@@ -96,3 +96,59 @@ export async function fetchBackendLogSummary(filters: BackendLogFilters): Promis
   const response = await client.get<BackendLogSummary>("/logs/backend/summary", { params });
   return response.data;
 }
+
+const parseFilenameFromDisposition = (value: string | null | undefined): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+    } catch {
+      return utf8Match[1].replace(/"/g, "");
+    }
+  }
+
+  const simpleMatch = value.match(/filename="?([^";]+)"?/i);
+  if (simpleMatch && simpleMatch[1]) {
+    return simpleMatch[1];
+  }
+
+  return undefined;
+};
+
+export type BackendLogExportResult = {
+  blob: Blob;
+  filename: string;
+};
+
+export async function downloadBackendLogsExport(filters: BackendLogFilters): Promise<BackendLogExportResult> {
+  const params = buildBackendLogParams({
+    level: filters.level ?? null,
+    event: filters.event ?? null,
+    correlationId: filters.correlationId ?? null,
+    logger: filters.logger ?? null,
+    search: filters.search ?? null,
+    startTime: filters.startTime ?? null,
+    endTime: filters.endTime ?? null
+  });
+
+  const response = await client.get<Blob>("/logs/backend/export", {
+    params,
+    responseType: "blob"
+  });
+
+  const disposition = typeof response.headers.get === "function"
+    ? response.headers.get("content-disposition")
+    : (response.headers as Record<string, string | undefined>)["content-disposition"] ??
+      (response.headers as Record<string, string | undefined>)["Content-Disposition"];
+
+  const filename = parseFilenameFromDisposition(disposition) ?? "backend-logs-export.csv";
+
+  return {
+    blob: response.data,
+    filename
+  };
+}

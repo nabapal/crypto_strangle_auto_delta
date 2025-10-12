@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import dayjs from "dayjs";
 
 vi.mock("../../api/logs", () => {
   return {
     fetchBackendLogs: vi.fn(),
-    fetchBackendLogSummary: vi.fn()
+    fetchBackendLogSummary: vi.fn(),
+    downloadBackendLogsExport: vi.fn()
   };
 });
 
@@ -20,10 +21,15 @@ vi.mock("../../utils/logger", () => ({
 }));
 
 import LogViewer from "../LogViewer";
-import { fetchBackendLogs, fetchBackendLogSummary } from "../../api/logs";
+import { fetchBackendLogs, fetchBackendLogSummary, downloadBackendLogsExport } from "../../api/logs";
+import { message } from "antd";
+import type { MessageType } from "antd/es/message/interface";
 
 const fetchBackendLogsMock = fetchBackendLogs as unknown as Mock;
 const fetchBackendLogSummaryMock = fetchBackendLogSummary as unknown as Mock;
+const downloadBackendLogsExportMock = downloadBackendLogsExport as unknown as Mock;
+let restoreSuccess: VoidFunction = () => {};
+let restoreError: VoidFunction = () => {};
 
 const createQueryClient = () =>
   new QueryClient({
@@ -36,9 +42,20 @@ const createQueryClient = () =>
   });
 
 describe("LogViewer", () => {
+  beforeAll(() => {
+    Object.defineProperty(window, "URL", {
+      writable: true,
+      value: {
+        createObjectURL: vi.fn(() => "blob://backend-logs"),
+        revokeObjectURL: vi.fn()
+      }
+    });
+  });
+
   beforeEach(() => {
     fetchBackendLogsMock.mockReset();
     fetchBackendLogSummaryMock.mockReset();
+    downloadBackendLogsExportMock.mockReset();
     fetchBackendLogsMock.mockResolvedValue({
       total: 0,
       page: 1,
@@ -55,6 +72,21 @@ describe("LogViewer", () => {
       latest_warning: null,
       ingestion_lag_seconds: null
     });
+    downloadBackendLogsExportMock.mockResolvedValue({
+      blob: new Blob(["timestamp,message"], { type: "text/csv" }),
+      filename: "backend-logs-export.csv"
+    });
+  const successSpy = vi.spyOn(message, "success").mockReturnValue({} as MessageType);
+  const errorSpy = vi.spyOn(message, "error").mockReturnValue({} as MessageType);
+    restoreSuccess = () => successSpy.mockRestore();
+    restoreError = () => errorSpy.mockRestore();
+  });
+
+  afterEach(() => {
+    (window.URL.createObjectURL as unknown as Mock).mockClear();
+    (window.URL.revokeObjectURL as unknown as Mock).mockClear();
+    restoreSuccess();
+    restoreError();
   });
 
   const renderComponent = () => {
@@ -158,5 +190,46 @@ describe("LogViewer", () => {
 
     expect(latestSummaryCall.startTime).toBe(start.toISOString());
     expect(latestSummaryCall.endTime).toBe(end.toISOString());
+  });
+
+  it("allows exporting backend logs as CSV", async () => {
+    renderComponent();
+
+    await waitFor(() => {
+      expect(fetchBackendLogSummaryMock).toHaveBeenCalled();
+    });
+
+    const exportButton = await screen.findByRole("button", { name: /export csv/i });
+    fireEvent.click(exportButton);
+
+    await waitFor(() => expect(downloadBackendLogsExportMock).toHaveBeenCalledTimes(1));
+
+    expect(downloadBackendLogsExportMock).toHaveBeenCalledWith(expect.objectContaining({
+      level: null,
+      event: null,
+      correlationId: null,
+      logger: null,
+      search: null
+    }));
+    expect(window.URL.createObjectURL).toHaveBeenCalled();
+    expect(message.success).toHaveBeenCalledWith("Backend logs export downloaded");
+    expect(message.error).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an error when backend logs export fails", async () => {
+    downloadBackendLogsExportMock.mockRejectedValueOnce(new Error("Export failed"));
+
+    renderComponent();
+
+    await waitFor(() => {
+      expect(fetchBackendLogSummaryMock).toHaveBeenCalled();
+    });
+
+    const exportButton = await screen.findByRole("button", { name: /export csv/i });
+    fireEvent.click(exportButton);
+
+    await waitFor(() => expect(downloadBackendLogsExportMock).toHaveBeenCalledTimes(1));
+
+    expect(message.error).toHaveBeenCalledWith("Export failed");
   });
 });

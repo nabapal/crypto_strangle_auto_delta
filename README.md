@@ -126,6 +126,7 @@ Remember to turn the flags back to `false` once troubleshooting is complete.
 - Backend logs are emitted in structured JSON, written both to stdout and `logs/backend.log`.
 - `BackendLogTailService` streams new lines into the `backend_logs` table, making them queryable via the frontend Log Viewer and API (`/api/logs/backend`). Tune polling cadence (`BACKEND_LOG_POLL_INTERVAL`), batch size (`BACKEND_LOG_BATCH_SIZE`), and safety limits (`LOG_INGEST_MAX_BATCH`) to match your environment.
 - `BackendLogRetentionService` purges entries older than `BACKEND_LOG_RETENTION_DAYS` (default 7 days).
+- Analytics export instrumentation emits `analytics_export_completed` and `analytics_export_failed` events with duration, range, and record metadata for monitoring; refer to `docs/runbooks/analytics-export.md` for handling alerts.
 - Use the Log Viewer tab to filter by level, correlation ID, event name, or free-text search; expand rows to inspect full payloads. Remote UI log ingestion remains disabled unless `VITE_ENABLE_REMOTE_LOGS=true`.
 - Host-level rotation (`logrotate`, etc.) can be layered onto `logs/backend.log` without breaking ingestion—the tailer handles truncation and rotations automatically.
 
