@@ -1,3 +1,5 @@
+import type { AxiosHeaderValue } from "axios";
+
 import client from "./client";
 
 export type BackendLogRecord = {
@@ -140,10 +142,25 @@ export async function downloadBackendLogsExport(filters: BackendLogFilters): Pro
     responseType: "blob"
   });
 
-  const disposition = typeof response.headers.get === "function"
+  const normalizeHeaderValue = (value: AxiosHeaderValue | undefined): string | undefined => {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => (item === undefined || item === null ? undefined : String(item)))
+        .filter((item): item is string => Boolean(item))
+        .join(", ");
+    }
+    return String(value);
+  };
+
+  const rawDisposition = typeof response.headers.get === "function"
     ? response.headers.get("content-disposition")
-    : (response.headers as Record<string, string | undefined>)["content-disposition"] ??
-      (response.headers as Record<string, string | undefined>)["Content-Disposition"];
+    : (response.headers as Record<string, AxiosHeaderValue | undefined>)["content-disposition"] ??
+      (response.headers as Record<string, AxiosHeaderValue | undefined>)["Content-Disposition"];
+
+  const disposition = normalizeHeaderValue(rawDisposition);
 
   const filename = parseFilenameFromDisposition(disposition) ?? "backend-logs-export.csv";
 

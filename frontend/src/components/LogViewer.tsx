@@ -60,7 +60,7 @@ export default function LogViewer() {
   });
   const [timeRange, setTimeRange] = useState<TimeRange>([null, null]);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
-  const [selectedRangePreset, setSelectedRangePreset] = useState<string | null>(null);
+  const [selectedRangePreset, setSelectedRangePreset] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     logger.info("Log viewer opened", { event: "ui_log_viewer_opened" });
@@ -102,9 +102,15 @@ export default function LogViewer() {
         document.body.removeChild(link);
         window.URL.revokeObjectURL(blobUrl);
         message.success("Backend logs export downloaded");
+        const sanitizedFilters = Object.entries(summaryFilters).reduce<Record<string, unknown>>((acc, [key, value]) => {
+          if (value !== null) {
+            acc[key] = value;
+          }
+          return acc;
+        }, {});
         logger.info("Backend logs export downloaded", {
-          event: "ui_backend_logs_export_success",
-          ...summaryFilters
+          ...sanitizedFilters,
+          event: "ui_backend_logs_export_success"
         });
       } catch (error) {
         logger.error("Failed to trigger backend logs download", {
@@ -148,7 +154,7 @@ export default function LogViewer() {
 
   const handleResetFilters = () => {
     setTimeRange([null, null]);
-    setSelectedRangePreset(null);
+  setSelectedRangePreset(undefined);
     setFilters({
       page: 1,
       pageSize: filters.pageSize ?? 50,
@@ -172,7 +178,7 @@ export default function LogViewer() {
   };
 
   const onTimeRangeChange = (range: TimeRange) => {
-    setSelectedRangePreset(null);
+  setSelectedRangePreset(undefined);
     applyTimeRange(range);
   };
 

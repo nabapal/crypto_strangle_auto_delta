@@ -140,29 +140,55 @@ Each phase below describes scope, implementation notes, success criteria, and fo
 
 ## CI/CD Pipeline Blueprint
 
-### Development Laptop (WSL Ubuntu)
-- Install pre-commit or pre-push hooks running `pnpm lint`, `pnpm test`, and `pytest`.
-- Document environment setup in `docs/DEVELOPER_GUIDE.md`.
+### 1. Local Quality Gates
+- Install a `pre-commit` hook that runs `pnpm lint`, `pnpm test -- --runInBand`, `pytest`, and `ruff` (once adopted) before allowing commits.
+- Mirror hook commands inside `scripts/dev_check.sh` so developers can invoke checks manually when the hook is bypassed.
+- Document the hook bootstrap steps and troubleshooting tips in `docs/DEVELOPER_GUIDE.md`.
 
-### GitHub Actions Workflow
-1. **lint-and-test** (trigger on push/PR)
-   - Setup Python → `pip install -e .[dev]` → `pytest`.
-   - Setup Node → `pnpm install` → `pnpm lint` → `pnpm test -- --runInBand`.
-   - Upload coverage artifacts.
-2. **preprod-deploy** (manual approval after tests)
-   - Build Docker images or production bundles.
-   - Deploy using current pre-prod script with testing account env file.
-   - Run automated smoke test that places a five-minute trade and validates dashboards.
-3. **production-deploy** (manual approval after preprod success)
-   - Connect to AWS Ubuntu VM (SSH/OIDC).
-   - Run `scripts/deploy_prod.sh`.
-   - Execute health checks (API heartbeat, websocket, UI ping).
+### 2. Branch & Release Strategy
+- Adopt `master` as the protected release branch and use short-lived feature branches (`feature/*`, `bugfix/*`).
+- Require pull requests to pass CI, receive at least one review, and stay up to date with `master` before merging.
+- Create annotated tags (`vYYYY.MM.DD[-patch]`) immediately after production deployments and publish release notes linking to the enhancements checklist.
 
-### Environment Guidance
-- Pre-prod runs on the same laptop; consider automating smoke script and publishing results back to Actions.
-- Production uses AWS VM; store secrets in Parameter Store/Secrets Manager and aim for zero-downtime restarts.
-- Enforce branch protection: green CI, reviewer approvals, up-to-date merges.
-- Tag releases (`vYYYY.MM.DD`) after successful production deploy.
+### 3. GitHub Actions Workflow Suite
+1. **lint-and-test** (`on: push` to PR branches, `on: pull_request`)
+   - Checkout with submodules (if added) and enable pnpm caching via `pnpm/action-setup`.
+   - Stage Python environment: `pip install -e backend[dev]` inside the job workspace; cache `.venv` or `pip` dir.
+   - Run backend checks: `pytest --maxfail=1 --disable-warnings`, `ruff check backend` (placeholder until adopted).
+   - Stage Node environment: `pnpm install --frozen-lockfile` with caching.
+   - Run frontend checks: `pnpm lint`, `pnpm test -- --runInBand --coverage`.
+   - Collect coverage artifacts (`coverage.xml`, `lcov.info`) and publish to the build summary.
+2. **docker-build** (`needs: lint-and-test`, runs on `push` to `master` and manual `workflow_dispatch`)
+   - Build backend and frontend images using `docker/backend.Dockerfile` and `docker/frontend.Dockerfile`.
+   - Scan images with Trivy and fail on critical vulnerabilities.
+   - Push images to Amazon ECR (or GHCR) tagged with commit SHA and release tag.
+3. **preprod-deploy** (`needs: docker-build`, gated by environment protection rule)
+   - Fetch secrets from GitHub OIDC → AWS IAM role to pull environment variables from SSM Parameter Store.
+   - Deploy the freshly built images to the pre-production ECS/Fargate service or docker-compose host.
+   - Run smoke tests: invoke `/api/trading/heartbeat`, `/api/analytics/history`, and execute a lightweight websocket connect-test script.
+   - Open an issue automatically if smoke tests fail (reference the deployment run).
+4. **production-deploy** (`needs: preprod-deploy`, manual approval)
+   - Reuse the published images (no rebuild) and update the production service.
+   - Execute post-deploy checks: API heartbeat, frontend availability via Playwright ping, analytics export dry-run.
+   - Notify Slack/Teams channel with deployment metadata and links to logs.
+
+### 4. Observability & Rollback Hooks
+- Emit structured logs during each pipeline step (build, deploy, smoke tests) and ship them to CloudWatch/Sentry.
+- Capture pre/post-deployment metrics (error rate, latency) and automatically roll back if thresholds trip during a configurable canary window.
+- Maintain a `scripts/rollback_prod.sh` helper that redeploys the previous tagged release.
+
+### 5. Secret & Configuration Management
+- Store API keys and database credentials in AWS SSM or Secrets Manager; grant GitHub Actions access via scoped IAM roles.
+- Use `.env.preprod` and `.env.prod` templates checked into the repo with placeholder values and document required parameters.
+- Rotate secrets quarterly and ensure the rotation plan is reflected in runbooks.
+
+### 6. Deliverables & Timeline
+- **Week 1:** Finalize hooks, update developer guide, enable branch protection rules.
+- **Week 2:** Implement `lint-and-test` and `docker-build` workflows with caching and reporting.
+- **Week 3:** Stand up preprod deployment job, smoke tests, and environment protection gates.
+- **Week 4:** Wire production deployment approval flow, post-deploy checks, and notification integration. Tag the first automated release and update release notes.
+
+Revisit this plan quarterly to accommodate new services, infrastructure changes, or compliance requirements.
 
 ## Deliverables Checklist
 - [x] Backend ordering logic updated and covered by tests.
