@@ -22,6 +22,7 @@ from ..core.database import async_session as default_session_factory
 from ..models import OrderLedger, PositionLedger, StrategySession, TradingConfiguration
 from ..schemas.trading import AnalyticsResponse, AnalyticsKpi
 from ..services.logging_utils import LogSampler, bind_log_context, monitor_task, reset_log_context
+from .fees_service import FeeCalculationError, calculate_option_fee
 from .delta_exchange_client import DeltaExchangeClient
 from .delta_websocket_client import OptionPriceStream
 
@@ -538,7 +539,14 @@ class TradingEngine:
                 },
                 "entry": None,
                 "positions": [],
-                "totals": {"realized": 0.0, "unrealized": 0.0, "total_pnl": 0.0, "notional": 0.0, "total_pnl_pct": 0.0},
+                "totals": {
+                    "realized": 0.0,
+                    "unrealized": 0.0,
+                    "total_pnl": 0.0,
+                    "notional": 0.0,
+                    "total_pnl_pct": 0.0,
+                    "fees": 0.0,
+                },
                 "limits": {
                     "max_profit_pct": 0.0,
                     "max_loss_pct": 0.0,
@@ -1194,6 +1202,9 @@ class TradingEngine:
         trailing_snapshot = self._trailing_snapshot(state)
         spot_snapshot = self._spot_snapshot(state)
 
+        fees_total = totals.get("fees", 0.0)
+        pnl_before_fees = totals["total_pnl"] + fees_total
+
         state.session.pnl_summary = {
             "realized": totals["realized"],
             "unrealized": totals["unrealized"],
@@ -1201,6 +1212,8 @@ class TradingEngine:
             "total_pnl": totals["total_pnl"],
             "total_pnl_pct": totals.get("total_pnl_pct"),
             "notional": totals.get("notional"),
+            "fees": fees_total,
+            "pnl_before_fees": pnl_before_fees,
             "updated_at": snapshot_time.isoformat(),
             "max_profit_seen": state.max_profit_seen,
             "max_profit_seen_pct": state.max_profit_seen_pct,
@@ -1545,6 +1558,12 @@ class TradingEngine:
         contract_size = self._config_contract_size()
         for contract in contracts:
             self._state.mark_prices[contract.symbol] = contract.mid_price
+            entry_fee = self._calculate_order_fee(
+                premium=contract.mid_price,
+                quantity=quantity,
+                contract_size=contract_size,
+                state=self._state,
+            )
             order = OrderLedger(
                 session_id=session.id,
                 order_id=f"{self._state.strategy_id}-{contract.contract_type}-{contract.product_id}",
@@ -1554,7 +1573,7 @@ class TradingEngine:
                 price=contract.mid_price,
                 fill_price=contract.mid_price,
                 status="filled",
-                raw_response={"simulated": True},
+                raw_response={"simulated": True, "calculated_fee": entry_fee},
             )
             position = PositionLedger(
                 session_id=session.id,
@@ -1573,6 +1592,7 @@ class TradingEngine:
                     "pnl_pct": 0.0,
                     "updated_at": datetime.now(UTC).isoformat(),
                     "contract_size": contract_size,
+                    "fees": {"entry": entry_fee, "exit": 0.0, "total": entry_fee},
                 },
             )
             session.orders.append(order)
@@ -1620,6 +1640,82 @@ class TradingEngine:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def _resolve_underlying_price(self, state: StrategyRuntimeState | None, fallback: float) -> float:
+        candidates: list[float | None] = []
+        if state is not None:
+            candidates.extend(
+                [
+                    state.spot_last_price,
+                    state.spot_entry_price,
+                    state.spot_high_price,
+                    state.spot_low_price,
+                ]
+            )
+        candidates.append(fallback)
+
+        for raw in candidates:
+            candidate = self._to_float(raw, 0.0)
+            if candidate > 0:
+                return candidate
+        return 0.0
+
+    def _calculate_order_fee(
+        self,
+        *,
+        premium: float,
+        quantity: float,
+        contract_size: float,
+        state: StrategyRuntimeState | None,
+    ) -> float:
+        premium_value = self._to_float(premium, 0.0)
+        quantity_value = abs(self._to_float(quantity, 0.0))
+        size_value = self._to_float(contract_size, 0.0)
+        if premium_value <= 0 or quantity_value <= 0 or size_value <= 0:
+            return 0.0
+
+        resolved_quantity = max(1, int(math.ceil(quantity_value)))
+        underlying_price = self._resolve_underlying_price(state, premium_value)
+        if underlying_price <= 0:
+            return 0.0
+
+        try:
+            result = calculate_option_fee(
+                underlying_price=underlying_price,
+                contract_size=size_value,
+                quantity=resolved_quantity,
+                premium=premium_value,
+            )
+        except FeeCalculationError as exc:
+            logger.debug(
+                "Skipping fee calculation due to invalid inputs",
+                extra={
+                    "event": "fee_calculation_skipped",
+                    "premium": premium_value,
+                    "quantity": quantity_value,
+                    "contract_size": size_value,
+                    "message": str(exc),
+                },
+            )
+            return 0.0
+
+        return self._to_float(result.get("applied_fee"), 0.0)
+
+    def _position_fee_breakdown(self, position: PositionLedger) -> tuple[float, float, float]:
+        analytics: dict[str, Any] = {}
+        if isinstance(position.analytics, dict):
+            analytics = position.analytics
+        fees_field = analytics.get("fees") if isinstance(analytics, dict) else {}
+        entry_fee = 0.0
+        exit_fee = 0.0
+        total_fee = 0.0
+        if isinstance(fees_field, dict):
+            entry_fee = self._to_float(fees_field.get("entry"), 0.0)
+            exit_fee = self._to_float(fees_field.get("exit"), 0.0)
+            total_fee = self._to_float(fees_field.get("total"), entry_fee + exit_fee)
+        if total_fee <= 0 and (entry_fee > 0 or exit_fee > 0):
+            total_fee = entry_fee + exit_fee
+        return entry_fee, exit_fee, total_fee
 
     async def _fetch_best_prices(self, contract: OptionContract) -> tuple[float | None, float | None]:
         stream_bid: float | None = None
@@ -2163,11 +2259,17 @@ class TradingEngine:
     def _calculate_realized_pnl(self, position: PositionLedger, exit_price: float) -> float:
         contract_size = self._config_contract_size()
         quantity = self._to_float(position.quantity, 0.0)
+        gross: float
         if position.side.lower() == "short":
-            return (position.entry_price - exit_price) * quantity * contract_size
-        if position.side.lower() == "long":
-            return (exit_price - position.entry_price) * quantity * contract_size
-        return 0.0
+            gross = (position.entry_price - exit_price) * quantity * contract_size
+        elif position.side.lower() == "long":
+            gross = (exit_price - position.entry_price) * quantity * contract_size
+        else:
+            gross = 0.0
+
+        _, _, total_fee = self._position_fee_breakdown(position)
+        net = gross - total_fee
+        return net
 
     async def _record_live_orders(self, orders: List[tuple[OptionContract, OrderStrategyOutcome, str]]) -> None:
         assert self._state is not None
@@ -2205,7 +2307,13 @@ class TradingEngine:
                 )
                 continue
 
-            raw_payload = {"attempts": attempts, "final_status": final_status}
+            order_fee = self._calculate_order_fee(
+                premium=price,
+                quantity=filled_quantity,
+                contract_size=contract_size,
+                state=self._state,
+            )
+            raw_payload = {"attempts": attempts, "final_status": final_status, "calculated_fee": order_fee}
 
             order = OrderLedger(
                 session_id=session.id,
@@ -2221,6 +2329,7 @@ class TradingEngine:
             session.orders.append(order)
 
             if side == "sell":
+                fees_payload = {"entry": order_fee, "exit": 0.0, "total": order_fee}
                 position = PositionLedger(
                     session_id=session.id,
                     symbol=contract.symbol,
@@ -2238,6 +2347,7 @@ class TradingEngine:
                         "pnl_pct": 0.0,
                         "updated_at": now.isoformat(),
                         "contract_size": contract_size,
+                        "fees": fees_payload,
                     },
                 )
                 session.positions.append(position)
@@ -2250,6 +2360,18 @@ class TradingEngine:
                 if existing:
                     existing.exit_price = price
                     existing.exit_time = now
+                    analytics_snapshot = dict(existing.analytics or {})
+                    fees_snapshot = dict(analytics_snapshot.get("fees") or {})
+                    entry_fee_value = self._to_float(fees_snapshot.get("entry"), 0.0)
+                    fees_snapshot.update(
+                        {
+                            "entry": entry_fee_value,
+                            "exit": order_fee,
+                            "total": entry_fee_value + order_fee,
+                        }
+                    )
+                    analytics_snapshot["fees"] = fees_snapshot
+                    existing.analytics = analytics_snapshot
                     existing.realized_pnl = self._calculate_realized_pnl(existing, price)
                     existing.unrealized_pnl = 0.0
                 else:
@@ -2507,6 +2629,7 @@ class TradingEngine:
         total_unrealized = 0.0
         total_realized = 0.0
         total_notional = 0.0
+        total_fees = 0.0
         default_contract_size = self._config_contract_size()
         now = datetime.now(UTC)
         mode = str(state.entry_summary.get("mode", "simulation")) if state.entry_summary else "simulation"
@@ -2547,6 +2670,8 @@ class TradingEngine:
                 continue
 
             analytics_snapshot = dict(position.analytics or {})
+            entry_fee, exit_fee, fee_total = self._position_fee_breakdown(position)
+            total_fees += fee_total
             raw_contract_size = analytics_snapshot.get("contract_size")
             try:
                 position_contract_size = float(raw_contract_size) if raw_contract_size is not None else default_contract_size
@@ -2675,6 +2800,11 @@ class TradingEngine:
                 "notional": entry_notional,
                 "updated_at": now.isoformat(),
                 "ticker_timestamp": ticker_timestamp,
+                "fees": {
+                    "entry": entry_fee,
+                    "exit": exit_fee,
+                    "total": fee_total,
+                },
             }
 
             leg_payload = {
@@ -2706,6 +2836,11 @@ class TradingEngine:
                 "mark_timestamp": ticker_timestamp or analytics_snapshot.get("updated_at"),
                 "quote_sources": quote_sources,
                 "quote_age_seconds": quote_age_seconds,
+                "fees": {
+                    "entry": entry_fee,
+                    "exit": exit_fee,
+                    "total": fee_total,
+                },
             }
             positions_payload.append(self._json_ready(leg_payload))
 
@@ -2717,6 +2852,7 @@ class TradingEngine:
             "total_pnl": total_pnl,
             "notional": total_notional,
             "total_pnl_pct": total_pct,
+            "fees": total_fees,
         }
         logger.debug(
             "Quote analytics summary",
@@ -2730,11 +2866,16 @@ class TradingEngine:
 
     def _calculate_unrealized(self, position: PositionLedger, mark_price: float, contract_size: float) -> float:
         quantity = self._to_float(position.quantity, 0.0)
-        if position.side.lower() == "short":
-            return (position.entry_price - mark_price) * quantity * contract_size
-        if position.side.lower() == "long":
-            return (mark_price - position.entry_price) * quantity * contract_size
-        return 0.0
+        side = position.side.lower()
+        if side == "short":
+            gross = (position.entry_price - mark_price) * quantity * contract_size
+        elif side == "long":
+            gross = (mark_price - position.entry_price) * quantity * contract_size
+        else:
+            gross = 0.0
+
+        entry_fee, _, _ = self._position_fee_breakdown(position)
+        return gross - entry_fee
 
     def _calculate_pnl_pct(self, position: PositionLedger, pnl_abs: float, contract_size: float) -> float:
         quantity = abs(self._to_float(position.quantity, 0.0))
@@ -2752,6 +2893,7 @@ class TradingEngine:
         total_realized = 0.0
         total_unrealized = 0.0
         total_notional = 0.0
+        total_fees = 0.0
 
         for position in state.session.positions:
             quantity = abs(self._to_float(position.quantity, 0.0))
@@ -2762,6 +2904,8 @@ class TradingEngine:
             contract_size = self._to_float(analytics_snapshot.get("contract_size"), default_contract_size)
             if contract_size <= 0:
                 contract_size = default_contract_size
+            entry_fee, exit_fee, fee_total = self._position_fee_breakdown(position)
+            total_fees += fee_total
 
             exit_price_value = position.exit_price
             if exit_price_value is None or exit_price_value <= 0:
@@ -2787,6 +2931,11 @@ class TradingEngine:
                     "pnl_pct": pnl_pct,
                     "close_reason": reason,
                     "updated_at": now.isoformat(),
+                    "fees": {
+                        "entry": entry_fee,
+                        "exit": exit_fee,
+                        "total": fee_total,
+                    },
                 }
             )
             if position.entry_time:
@@ -2805,6 +2954,11 @@ class TradingEngine:
                 "pnl_pct": pnl_pct,
                 "entry_time": self._serialize_datetime(position.entry_time),
                 "exit_time": self._serialize_datetime(position.exit_time),
+                "fees": {
+                    "entry": entry_fee,
+                    "exit": exit_fee,
+                    "total": fee_total,
+                },
             }
             legs.append(leg_summary)
 
@@ -2820,6 +2974,7 @@ class TradingEngine:
             "total_pnl": total_pnl,
             "notional": total_notional,
             "total_pnl_pct": total_pct,
+            "fees": total_fees,
         }
 
         trailing_summary = self._trailing_snapshot(state)
@@ -2839,6 +2994,9 @@ class TradingEngine:
         state.active = False
         state.session.status = "stopped"
         state.session.deactivated_at = state.session.deactivated_at or now
+        fees_total = totals.get("fees", 0.0)
+        pnl_before_fees = totals["total_pnl"] + fees_total
+
         state.session.pnl_summary = {
             "realized": totals["realized"],
             "unrealized": totals["unrealized"],
@@ -2846,6 +3004,8 @@ class TradingEngine:
             "total_pnl": totals["total_pnl"],
             "notional": totals["notional"],
             "total_pnl_pct": totals["total_pnl_pct"],
+            "fees": fees_total,
+            "pnl_before_fees": pnl_before_fees,
             "exit_reason": reason,
             "generated_at": summary["generated_at"],
             "max_profit_seen": trailing_summary["max_profit_seen"],

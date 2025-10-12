@@ -1,4 +1,4 @@
-import { cloneElement, type ReactNode } from "react";
+import { cloneElement, type ReactElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -28,7 +28,7 @@ vi.mock("../../api/trading", () => ({
 type MockResponsiveContainerProps = {
   width?: number | string;
   height?: number | string;
-  children: ReactNode | ((dimensions: { width: number; height: number }) => ReactNode);
+  children: ReactElement | ((dimensions: { width: number; height: number }) => ReactNode);
 };
 
 vi.mock("recharts", async () => {
@@ -92,10 +92,26 @@ const analyticsHistory = {
     consecutive_losses: 1,
     max_gain: 120,
     max_loss: -45,
-    max_drawdown: -60
+    max_drawdown: -60,
+    net_pnl: 1250,
+    pnl_before_fees: 1300,
+    fees_total: 50,
+    average_fee: 10,
+    profitable_days: 2
   },
   charts: {
-    cumulative_pnl: [{ timestamp: "2025-10-09T10:00:00Z", value: 125 }],
+    cumulative_pnl: [
+      { timestamp: "2025-10-09T10:00:00Z", value: 125 },
+      { timestamp: "2025-10-09T13:00:00Z", value: 150 }
+    ],
+    cumulative_gross_pnl: [
+      { timestamp: "2025-10-09T10:00:00Z", value: 130 },
+      { timestamp: "2025-10-09T13:00:00Z", value: 160 }
+    ],
+    cumulative_fees: [
+      { timestamp: "2025-10-09T10:00:00Z", value: 5 },
+      { timestamp: "2025-10-09T13:00:00Z", value: 10 }
+    ],
     drawdown: [{ timestamp: "2025-10-09T11:00:00Z", value: -20 }],
     rolling_win_rate: [{ timestamp: "2025-10-09T12:00:00Z", value: 75 }],
     trades_histogram: [{ start: -50, end: 50, count: 3 }]
@@ -194,8 +210,14 @@ describe("AnalyticsDashboard", () => {
       </QueryClientProvider>
     );
 
-    await screen.findByText(/Advanced Analytics/i);
-    await screen.findByText("$1,250.00");
+  await screen.findByText(/Advanced Analytics/i);
+  const netValueNodes = await screen.findAllByText("$1,250.00");
+  expect(netValueNodes.length).toBeGreaterThan(0);
+  await screen.findByText(/Total Fees Paid/i);
+  await screen.findByText("$50.00");
+  await screen.findByText(/PnL Before Fees/i);
+  await screen.findByText("$1,300.00");
+    await screen.findByText(/Profitable Days/i);
 
     await waitFor(() => expect(fetchAnalyticsHistoryMock).toHaveBeenCalledTimes(1));
 

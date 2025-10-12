@@ -274,6 +274,7 @@ export default function TradingControlPanel() {
   const totalPnl = totals?.total_pnl ?? 0;
   const realized = totals?.realized ?? 0;
   const unrealized = totals?.unrealized ?? 0;
+  const feesTotal = totals?.fees ?? 0;
   const totalPnlPct = Number.isFinite(totals?.total_pnl_pct) ? totals?.total_pnl_pct ?? null : null;
 
   const entry = (runtime?.entry as Record<string, unknown> | null) ?? null;
@@ -614,7 +615,9 @@ export default function TradingControlPanel() {
                   {Number.isFinite(totalPnlPct) ? ` (${formatPercent(totalPnlPct ?? 0)}%)` : ""}
                 </Text>
                 <Text type="secondary">
-                  Realized ${formatNumber(realized)} · Unrealized ${formatNumber(unrealized)}
+                  Realized ${formatNumber(realized)} · Unrealized ${formatNumber(unrealized)} · Fees ${formatNumber(
+                    feesTotal
+                  )}
                 </Text>
               </Space>
             )}

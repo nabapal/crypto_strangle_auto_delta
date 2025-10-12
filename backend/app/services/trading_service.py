@@ -204,7 +204,14 @@ class TradingService:
                 snapshot["schedule"] = schedule
             snapshot.setdefault(
                 "totals",
-                {"realized": 0.0, "unrealized": 0.0, "total_pnl": 0.0, "notional": 0.0, "total_pnl_pct": 0.0},
+                {
+                    "realized": 0.0,
+                    "unrealized": 0.0,
+                    "total_pnl": 0.0,
+                    "notional": 0.0,
+                    "total_pnl_pct": 0.0,
+                    "fees": 0.0,
+                },
             )
             snapshot.setdefault(
                 "limits",
@@ -300,6 +307,7 @@ class TradingService:
             "total_pnl": 0.0,
             "notional": 0.0,
             "total_pnl_pct": 0.0,
+            "fees": 0.0,
         }
         for entry in positions_iterable:
             raw_symbol = entry.get("symbol") or entry.get("market_symbol")

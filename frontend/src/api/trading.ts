@@ -48,6 +48,34 @@ export interface TradingControlResult {
 
 export type TradingControlAction = "start" | "stop" | "restart" | "panic";
 
+export interface OptionFeeQuoteRequest {
+  underlying_price: number;
+  contract_size: number;
+  quantity: number;
+  premium: number;
+  order_type: "maker" | "taker";
+}
+
+export interface OptionFeeQuoteResponse {
+  underlying_price: number;
+  contract_size: number;
+  quantity: number;
+  premium: number;
+  fee_rate: number;
+  premium_cap_rate: number;
+  notional: number;
+  notional_fee: number;
+  premium_value: number;
+  premium_cap: number;
+  fee: number;
+  applied_fee: number;
+  cap_applied: boolean;
+  order_type: "maker" | "taker";
+  gst_rate: number;
+  total_fee_with_gst: number;
+  breakdown: Record<string, unknown>;
+}
+
 export interface AnalyticsKpi {
   label: string;
   value: number;
@@ -87,6 +115,11 @@ export interface AnalyticsHistoryMetrics {
   max_gain: number;
   max_loss: number;
   max_drawdown: number;
+  net_pnl: number;
+  pnl_before_fees: number;
+  fees_total: number;
+  average_fee: number;
+  profitable_days: number;
 }
 
 export interface AnalyticsHistoryCharts {
@@ -94,6 +127,8 @@ export interface AnalyticsHistoryCharts {
   drawdown: AnalyticsChartPoint[];
   rolling_win_rate: AnalyticsChartPoint[];
   trades_histogram: AnalyticsHistogramBucket[];
+  cumulative_gross_pnl: AnalyticsChartPoint[];
+  cumulative_fees: AnalyticsChartPoint[];
 }
 
 export interface AnalyticsTimelineEntry {
@@ -159,6 +194,7 @@ export interface RuntimeTotals {
   total_pnl: number;
   notional: number;
   total_pnl_pct: number;
+  fees: number;
 }
 
 export interface RuntimeTrailing {
@@ -248,6 +284,11 @@ export const fetchTradingSessionDetail = async (sessionId: number) => {
   return response.data;
 };
 
+export const quoteOptionFees = async (payload: OptionFeeQuoteRequest) => {
+  const response = await client.post<OptionFeeQuoteResponse>("/trading/fees/quote", payload);
+  return response.data;
+};
+
 export const fetchAnalytics = async () => {
   const response = await client.get<AnalyticsResponse>("/analytics/dashboard");
   return response.data;
@@ -288,10 +329,11 @@ export const downloadAnalyticsExport = async (params: AnalyticsHistoryParams): P
     responseType: "blob"
   });
 
-  const disposition = typeof response.headers.get === "function"
+  const dispositionRaw = typeof response.headers.get === "function"
     ? response.headers.get("content-disposition")
     : (response.headers as Record<string, string | undefined>)["content-disposition"] ??
       (response.headers as Record<string, string | undefined>)["Content-Disposition"];
+  const disposition = typeof dispositionRaw === "string" ? dispositionRaw : undefined;
 
   const filename = parseFilenameFromDisposition(disposition) ?? "analytics-export.csv";
 

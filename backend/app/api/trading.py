@@ -15,7 +15,10 @@ from ..schemas.trading import (
     StrategySessionSummary,
     TradingControlRequest,
     TradingControlResponse,
+    OptionFeeQuoteRequest,
+    OptionFeeQuoteResponse,
 )
+from ..services.fees_service import FeeCalculationError, calculate_option_fee
 from ..services.trading_service import TradingService
 from ..services.trading_engine import ExpiredExpiryError, InvalidExpiryError
 from .deps import get_current_active_user, get_db_session
@@ -86,6 +89,23 @@ async def control_trading(payload: TradingControlRequest, session: AsyncSession 
     except ValueError as exc:  # noqa: PERF203
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return TradingControlResponse(**result)
+
+
+@router.post("/fees/quote", response_model=OptionFeeQuoteResponse)
+async def quote_option_fee(payload: OptionFeeQuoteRequest):
+    try:
+        result = calculate_option_fee(
+            underlying_price=payload.underlying_price,
+            contract_size=payload.contract_size,
+            quantity=payload.quantity,
+            premium=payload.premium,
+            order_type=payload.order_type,
+        )
+        return OptionFeeQuoteResponse(**result)
+    except FeeCalculationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="Unable to calculate option fee") from exc
 
 
 @router.get("/heartbeat")

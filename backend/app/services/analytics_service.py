@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 from typing import Iterable, Iterator, Optional, Sequence
 
@@ -215,8 +215,12 @@ class AnalyticsService:
                 "realized": _parse_number(totals_meta.get("realized")),
                 "unrealized": _parse_number(totals_meta.get("unrealized")),
                 "total_pnl": _parse_number(totals_meta.get("total_pnl") or totals_meta.get("total")),
+                "fees": _parse_number(totals_meta.get("fees")),
+                "pnl_before_fees": _parse_number(totals_meta.get("pnl_before_fees")),
             }
             totals.setdefault("total_pnl", totals["realized"] + totals["unrealized"])
+            if totals.get("pnl_before_fees") == 0.0 and (totals.get("total_pnl") or 0.0) != 0.0:
+                totals["pnl_before_fees"] = totals.get("total_pnl", 0.0) + totals.get("fees", 0.0)
 
             generated_at_raw = summary_meta.get("generated_at") or totals_meta.get("generated_at")
             generated_at = datetime.now(timezone.utc)
@@ -244,10 +248,16 @@ class AnalyticsService:
                 "enabled": bool((trailing_meta or {}).get("enabled")),
             }
 
+            net_total = totals.get("total_pnl", 0.0)
+            fees_total = totals.get("fees", 0.0)
+            gross_total = totals.get("pnl_before_fees", net_total + fees_total)
+
             kpis_payload = [
+                {"label": "Net PnL", "value": net_total, "unit": "USD"},
+                {"label": "Total Fees Paid", "value": fees_total, "unit": "USD"},
+                {"label": "PnL Before Fees", "value": gross_total, "unit": "USD"},
                 {"label": "Realized PnL", "value": totals["realized"], "unit": "USD"},
                 {"label": "Unrealized PnL", "value": totals["unrealized"], "unit": "USD"},
-                {"label": "Net PnL", "value": totals["total_pnl"], "unit": "USD"},
             ]
 
             kpis_payload.append(
@@ -405,6 +415,33 @@ class AnalyticsService:
                     orders.append((session, order))
         return orders
 
+    @staticmethod
+    def _safe_number(value: object) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _position_fee_total(self, position: PositionLedger) -> float:
+        analytics = position.analytics if isinstance(position.analytics, dict) else {}
+        if not isinstance(analytics, dict):
+            return 0.0
+        fees_field = analytics.get("fees")
+        if isinstance(fees_field, dict):
+            total = self._safe_number(fees_field.get("total"))
+            if total <= 0.0:
+                entry = self._safe_number(fees_field.get("entry"))
+                exit_fee = self._safe_number(fees_field.get("exit"))
+                total = entry + exit_fee
+            return max(total, 0.0)
+        return 0.0
+
+    def _net_realized_pnl(self, position: PositionLedger) -> tuple[float, float, float]:
+        realized = self._safe_number(position.realized_pnl)
+        fee_total = self._position_fee_total(position)
+        net_realized = realized - fee_total
+        return realized, net_realized, fee_total
+
     def _compute_metrics(
         self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
     ) -> AnalyticsHistoryMetrics:
@@ -415,35 +452,51 @@ class AnalyticsService:
             metrics.days_running = len({self._normalize_request_datetime(s.activated_at, start_dt).date() for s in sessions})
             return metrics
 
-        realized_values: list[float] = []
+        net_realized_values: list[float] = []
+        gross_realized_values: list[float] = []
+        fee_values: list[float] = []
         win_flags: list[int] = []
         trade_datetimes: list[datetime] = []
+        daily_net_totals: defaultdict[date, float] = defaultdict(float)
 
         for position in positions:
-            realized = float(position.realized_pnl or 0.0)
-            realized_values.append(realized)
-            win_flags.append(1 if realized > 0 else 0 if realized == 0 else -1)
+            gross_realized, net_realized, fee_total = self._net_realized_pnl(position)
+            net_realized_values.append(net_realized)
+            gross_realized_values.append(gross_realized)
+            fee_values.append(fee_total)
+            win_flags.append(1 if net_realized > 0 else 0 if net_realized == 0 else -1)
             exit_ts = position.exit_time or position.entry_time or datetime.now(timezone.utc)
             trade_datetimes.append(self._normalize_request_datetime(exit_ts, start_dt))
+            trade_day = trade_datetimes[-1].date()
+            daily_net_totals[trade_day] += net_realized
 
-        metrics.trade_count = len(realized_values)
+        metrics.trade_count = len(net_realized_values)
         metrics.days_running = len({dt.date() for dt in trade_datetimes})
 
-        wins = [value for value in realized_values if value > 0]
-        losses = [value for value in realized_values if value < 0]
+        wins = [value for value in net_realized_values if value > 0]
+        losses = [value for value in net_realized_values if value < 0]
         metrics.win_count = len(wins)
         metrics.loss_count = len(losses)
 
-        metrics.average_pnl = sum(realized_values) / metrics.trade_count if metrics.trade_count else 0.0
+        net_total = sum(net_realized_values)
+        gross_total = sum(gross_realized_values)
+        fees_total = sum(fee_values)
+
+        metrics.average_pnl = net_total / metrics.trade_count if metrics.trade_count else 0.0
         metrics.average_win = sum(wins) / metrics.win_count if metrics.win_count else 0.0
         metrics.average_loss = sum(losses) / metrics.loss_count if metrics.loss_count else 0.0
         metrics.win_rate = (metrics.win_count / metrics.trade_count) * 100 if metrics.trade_count else 0.0
         metrics.max_gain = max(wins) if wins else 0.0
         metrics.max_loss = min(losses) if losses else 0.0
+        metrics.net_pnl = net_total
+        metrics.pnl_before_fees = gross_total
+        metrics.fees_total = fees_total
+        metrics.average_fee = fees_total / metrics.trade_count if metrics.trade_count else 0.0
+        metrics.profitable_days = sum(1 for total in daily_net_totals.values() if total > 0)
 
         # Compute streaks
         sorted_positions = sorted(
-            zip(trade_datetimes, realized_values, win_flags), key=lambda item: item[0]
+            zip(trade_datetimes, net_realized_values, win_flags), key=lambda item: item[0]
         )
         current_win_streak = 0
         current_loss_streak = 0
@@ -485,34 +538,43 @@ class AnalyticsService:
         if not positions:
             return charts
 
-        points = []
+        points: list[tuple[datetime, float, float, float]] = []
         for position in positions:
             event_time = position.exit_time or position.entry_time or start_dt
             normalized_time = self._normalize_request_datetime(event_time, start_dt)
-            points.append((normalized_time, float(position.realized_pnl or 0.0)))
+            gross_realized, net_realized, fee_total = self._net_realized_pnl(position)
+            points.append((normalized_time, net_realized, gross_realized, fee_total))
 
         points.sort(key=lambda item: item[0])
 
         cumulative = 0.0
+        cumulative_gross = 0.0
+        cumulative_fees = 0.0
         running_high = 0.0
         window = 10
         win_window: list[int] = []
         cumulative_points: list[AnalyticsChartPoint] = []
+        cumulative_gross_points: list[AnalyticsChartPoint] = []
+        cumulative_fee_points: list[AnalyticsChartPoint] = []
         drawdown_points: list[AnalyticsChartPoint] = []
         win_rate_points: list[AnalyticsChartPoint] = []
 
         histogram_values: list[float] = []
 
-        for timestamp, realized in points:
-            cumulative += realized
+        for timestamp, net_realized, gross_realized, fee_total in points:
+            cumulative += net_realized
+            cumulative_gross += gross_realized
+            cumulative_fees += fee_total
             running_high = max(running_high, cumulative)
             drawdown = running_high - cumulative
-            histogram_values.append(realized)
+            histogram_values.append(net_realized)
 
             cumulative_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative))
+            cumulative_gross_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative_gross))
+            cumulative_fee_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative_fees))
             drawdown_points.append(AnalyticsChartPoint(timestamp=timestamp, value=drawdown))
 
-            win_flag = 1 if realized > 0 else 0
+            win_flag = 1 if net_realized > 0 else 0
             win_window.append(win_flag)
             if len(win_window) > window:
                 win_window.pop(0)
@@ -521,6 +583,8 @@ class AnalyticsService:
             win_rate_points.append(AnalyticsChartPoint(timestamp=timestamp, value=rate))
 
         charts.cumulative_pnl = cumulative_points
+        charts.cumulative_gross_pnl = cumulative_gross_points
+        charts.cumulative_fees = cumulative_fee_points
         charts.drawdown = drawdown_points
         charts.rolling_win_rate = win_rate_points
         charts.trades_histogram = self._build_histogram(histogram_values)
@@ -568,6 +632,13 @@ class AnalyticsService:
             normalized_ts = self._normalize_request_datetime(order.created_at, start_dt)
             related_positions = position_by_session.get((session.id, order.symbol or ""), [])
             primary_position = related_positions[0] if related_positions else None
+            net_realized_primary: float | None = None
+            fee_primary = 0.0
+            if primary_position is not None:
+                _, net_realized_value, fee_value = self._net_realized_pnl(primary_position)
+                net_realized_primary = net_realized_value
+                fee_primary = fee_value
+
             timeline.append(
                 AnalyticsTimelineEntry(
                     timestamp=normalized_ts,
@@ -579,9 +650,9 @@ class AnalyticsService:
                     quantity=order.quantity,
                     price=order.price,
                     fill_price=order.fill_price,
-                    realized_pnl=(primary_position.realized_pnl if primary_position else None),
-                    unrealized_pnl=(primary_position.unrealized_pnl if primary_position else None),
-                    metadata={"status": order.status},
+                    realized_pnl=net_realized_primary,
+                    unrealized_pnl=primary_position.unrealized_pnl if primary_position else None,
+                    metadata={"status": order.status, "fees": fee_primary},
                 )
             )
 
@@ -590,6 +661,7 @@ class AnalyticsService:
             if not exit_time:
                 continue
             normalized_ts = self._normalize_request_datetime(exit_time, start_dt)
+            _, net_realized, fee_total = self._net_realized_pnl(position)
             timeline.append(
                 AnalyticsTimelineEntry(
                     timestamp=normalized_ts,
@@ -599,11 +671,16 @@ class AnalyticsService:
                     side=position.side,
                     quantity=position.quantity,
                     price=position.exit_price,
-                    realized_pnl=position.realized_pnl,
+                    realized_pnl=net_realized,
                     unrealized_pnl=position.unrealized_pnl,
-                    metadata={"event": "position_exit" if position.exit_price is not None else "position_update"},
+                    metadata={
+                        "event": "position_exit" if position.exit_price is not None else "position_update",
+                        "fees": fee_total,
+                    },
                 )
             )
+
+        timeline.sort(key=lambda entry: entry.timestamp)
 
         timeline.sort(key=lambda entry: entry.timestamp)
         return timeline

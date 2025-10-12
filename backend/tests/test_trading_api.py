@@ -131,3 +131,25 @@ async def test_list_sessions_returns_newest_first(db_session, auth_headers):
 
     assert ids.index(newer.id) < ids.index(older.id)
     assert ids.index(older.id) < ids.index(no_activation.id)
+
+
+@pytest.mark.asyncio
+async def test_quote_trading_fees_applies_premium_cap(auth_headers):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", headers=auth_headers) as client:
+        response = await client.post(
+            "/api/trading/fees/quote",
+            json={
+                "underlying_price": 26200,
+                "contract_size": 0.001,
+                "quantity": 300,
+                "premium": 15,
+                "order_type": "taker",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["notional"] == pytest.approx(7860)
+    assert payload["applied_fee"] == pytest.approx(0.45)
+    assert payload["cap_applied"] is True

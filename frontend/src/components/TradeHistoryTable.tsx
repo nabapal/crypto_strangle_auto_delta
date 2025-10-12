@@ -250,6 +250,23 @@ export default function TradeHistoryTable() {
       }
     },
     {
+      title: "PnL (ex Fees)",
+      dataIndex: "pnl_summary",
+      render: (_: unknown, record: TradingSessionSummary) => {
+        const summary = record.pnl_summary as Record<string, unknown> | undefined;
+        return renderCurrency(computeGrossPnl(summary));
+      }
+    },
+    {
+      title: "Fees",
+      dataIndex: "pnl_summary",
+      render: (_: unknown, record: TradingSessionSummary) => {
+        const summary = record.pnl_summary as Record<string, unknown> | undefined;
+        const fees = computeFees(summary);
+        return renderCurrency(fees === null ? null : -fees);
+      }
+    },
+    {
       title: "Realized",
       dataIndex: "pnl_summary",
       render: (_: unknown, record: TradingSessionSummary) => {
@@ -341,6 +358,8 @@ export default function TradeHistoryTable() {
   const netValue = getSummaryValue(totalsRecord, ["total_pnl", "total"]);
   const notionalValue = getSummaryValue(totalsRecord, ["notional"]);
   const pctValue = getSummaryValue(totalsRecord, ["total_pnl_pct"]);
+  const feesValue = getSummaryValue(totalsRecord, ["fees"]);
+  const pnlBeforeFeesValue = getSummaryValue(totalsRecord, ["pnl_before_fees"]);
   const orders = detail?.orders ?? [];
   const maxProfitValue = getSummaryValue(trailingRecord, ["max_profit_seen"]);
   const maxProfitPctValue = getSummaryValue(trailingRecord, ["max_profit_seen_pct"]);
@@ -352,6 +371,38 @@ export default function TradeHistoryTable() {
   const spotHighValue = getSummaryValue(spotRecord, ["high"]);
   const spotLowValue = getSummaryValue(spotRecord, ["low"]);
   const spotLastValue = getSummaryValue(spotRecord, ["last"]);
+
+  const computeFees = (summary: Record<string, unknown> | undefined) => {
+    const raw = getSummaryValue(summary, ["fees"]);
+    return toNumber(raw);
+  };
+
+  const computeGrossPnl = (summary: Record<string, unknown> | undefined) => {
+    const grossRaw = getSummaryValue(summary, ["pnl_before_fees"]);
+    const gross = toNumber(grossRaw);
+    if (gross !== null) {
+      return gross;
+    }
+    const net = toNumber(getSummaryValue(summary, ["total_pnl", "total"]));
+    const fees = computeFees(summary);
+    if (net !== null && fees !== null) {
+      return net + fees;
+    }
+    return null;
+  };
+
+  const feesNumeric = toNumber(feesValue);
+  const grossNumeric = (() => {
+    const explicit = toNumber(pnlBeforeFeesValue);
+    if (explicit !== null) {
+      return explicit;
+    }
+    const netNumeric = toNumber(netValue);
+    if (netNumeric !== null && feesNumeric !== null) {
+      return netNumeric + feesNumeric;
+    }
+    return null;
+  })();
 
   const legColumns = [
     {
@@ -471,7 +522,9 @@ export default function TradeHistoryTable() {
             </Descriptions>
             <Descriptions column={2} size="small">
               <Descriptions.Item label="Net PnL">{renderCurrency(netValue)}</Descriptions.Item>
+              <Descriptions.Item label="PnL (ex Fees)">{renderCurrency(grossNumeric)}</Descriptions.Item>
               <Descriptions.Item label="PnL %">{renderPercentTag(pctValue)}</Descriptions.Item>
+              <Descriptions.Item label="Fees Paid">{renderCurrency(feesNumeric === null ? null : -feesNumeric)}</Descriptions.Item>
               <Descriptions.Item label="Realized">{renderCurrency(realizedValue)}</Descriptions.Item>
               <Descriptions.Item label="Unrealized">{renderCurrency(unrealizedValue)}</Descriptions.Item>
               <Descriptions.Item label="Notional">{formatCurrencyText(notionalValue)}</Descriptions.Item>

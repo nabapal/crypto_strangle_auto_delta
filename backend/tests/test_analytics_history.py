@@ -44,6 +44,7 @@ async def test_analytics_history_returns_metrics(db_session, auth_headers):
                 unrealized_pnl=0.0,
                 entry_time=now - timedelta(hours=4),
                 exit_time=first_trade_exit,
+                analytics={"fees": {"entry": 1.0, "exit": 0.5}},
             ),
             PositionLedger(
                 symbol="BTC-TEST",
@@ -55,6 +56,7 @@ async def test_analytics_history_returns_metrics(db_session, auth_headers):
                 unrealized_pnl=0.0,
                 entry_time=now - timedelta(hours=2),
                 exit_time=second_trade_exit,
+                analytics={"fees": {"entry": 1.5}},
             ),
         ]
     )
@@ -105,11 +107,16 @@ async def test_analytics_history_returns_metrics(db_session, auth_headers):
     assert metrics["trade_count"] == 2
     assert metrics["win_count"] == 1
     assert metrics["loss_count"] == 1
-    assert pytest.approx(metrics["max_gain"], rel=1e-3) == 100.0
-    assert pytest.approx(metrics["max_loss"], rel=1e-3) == -50.0
+    assert pytest.approx(metrics["max_gain"], rel=1e-3) == 98.5
+    assert pytest.approx(metrics["max_loss"], rel=1e-3) == -51.5
     assert metrics["consecutive_wins"] == 1
     assert metrics["consecutive_losses"] == 1
-    assert pytest.approx(metrics["max_drawdown"], rel=1e-3) == 50.0
+    assert pytest.approx(metrics["max_drawdown"], rel=1e-3) == 51.5
+    assert pytest.approx(metrics["fees_total"], rel=1e-6) == 3.0
+    assert pytest.approx(metrics["pnl_before_fees"], rel=1e-6) == 50.0
+    assert pytest.approx(metrics["net_pnl"], rel=1e-6) == 47.0
+    assert pytest.approx(metrics["average_fee"], rel=1e-6) == 1.5
+    assert metrics["profitable_days"] == 1
 
     charts = payload["charts"]
     assert len(charts["cumulative_pnl"]) == 2

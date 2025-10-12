@@ -14,6 +14,7 @@ from app.services.trading_engine import (
     ExpiredExpiryError,
     InvalidExpiryError,
     OptionContract,
+    OrderStrategyOutcome,
     StrategyRuntimeState,
     TradingEngine,
 )
@@ -534,7 +535,7 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
                 "mark_price": 95.0,
             }
         ],
-        "totals": {"realized": 0.0, "unrealized": 25.0, "total_pnl": 25.0},
+    "totals": {"realized": 0.0, "unrealized": 25.0, "total_pnl": 25.0, "fees": 0.0},
     "planned_exit_at": datetime.now(timezone.utc).isoformat(),
         "time_to_exit_seconds": 3600.0,
         "trailing": {
@@ -561,6 +562,7 @@ async def test_runtime_snapshot_active_uses_monitor_snapshot():
     assert snapshot["status"] == "live"
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 25.0
+    assert snapshot["totals"]["fees"] == 0.0
     assert snapshot["trailing"]["enabled"] is True
     assert snapshot["trailing"]["max_drawdown_seen"] == pytest.approx(45.0)
     assert snapshot["spot"]["last"] == pytest.approx(63010.5)
@@ -634,7 +636,7 @@ async def test_trading_service_runtime_snapshot_skips_stale_metadata(db_session)
                 "entry": {"status": "live"},
                 "monitor": {
                     "positions": [{"symbol": "BTC-06OCT25-58000-C", "status": "open"}],
-                    "totals": {"realized": 0.0, "unrealized": 12.5, "total_pnl": 12.5},
+                    "totals": {"realized": 0.0, "unrealized": 12.5, "total_pnl": 12.5, "fees": 0.0},
                     "planned_exit_at": "2025-10-05T15:20:00+00:00",
                     "time_to_exit_seconds": 5400.0,
                     "generated_at": "2025-10-05T10:00:00+00:00",
@@ -652,6 +654,7 @@ async def test_trading_service_runtime_snapshot_skips_stale_metadata(db_session)
     assert snapshot.get("mode") is None
     assert snapshot.get("positions") == []
     assert snapshot["totals"]["total_pnl"] == 0.0
+    assert snapshot["totals"]["fees"] == 0.0
     assert snapshot["schedule"]["planned_exit_at"] is None
     assert snapshot["trailing"]["max_drawdown_seen"] == 0.0
     assert snapshot["spot"]["last"] is None
@@ -676,7 +679,7 @@ async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(d
                 "entry": {"status": "live"},
                 "monitor": {
                     "positions": [{"symbol": "BTC-06OCT25-58000-P", "status": "open"}],
-                    "totals": {"realized": 0.0, "unrealized": 15.0, "total_pnl": 15.0},
+                    "totals": {"realized": 0.0, "unrealized": 15.0, "total_pnl": 15.0, "fees": 0.0},
                     "planned_exit_at": "2025-10-05T15:20:00+00:00",
                     "time_to_exit_seconds": 3600.0,
                     "generated_at": "2025-10-05T11:00:00+00:00",
@@ -726,6 +729,7 @@ async def test_trading_service_runtime_snapshot_uses_runtime_meta_when_running(d
     assert snapshot["mode"] == "simulation"
     assert snapshot["positions"]
     assert snapshot["totals"]["total_pnl"] == 15.0
+    assert snapshot["totals"]["fees"] == 0.0
     assert snapshot["schedule"]["planned_exit_at"] == "2025-10-05T15:20:00+00:00"
     assert snapshot["trailing"]["max_drawdown_seen"] == pytest.approx(55.0)
     assert snapshot["spot"]["last"] == pytest.approx(62950.0)
@@ -844,6 +848,76 @@ async def test_limit_order_uses_best_bid_for_sell():
 
 
 @pytest.mark.asyncio
+async def test_live_order_recording_deducts_fees_from_net_pnl(monkeypatch):
+    config = TradingConfiguration(name="Fee Config", quantity=1, contract_size=1.0)
+    session = StrategySession(strategy_id="fee-strategy", status="running", config_snapshot={})
+    session.id = 50
+
+    engine = TradingEngine()
+    state = StrategyRuntimeState(strategy_id="fee-strategy", config=config, session=session)
+    state.spot_last_price = 50000.0
+    engine._state = state
+
+    persist_stub = AsyncMock()
+    monkeypatch.setattr(engine, "_persist_session_state", persist_stub)
+
+    contract = OptionContract(
+        symbol="BTC-TEST-50000-C",
+        product_id=101,
+        delta=0.1,
+        strike_price=50000,
+        expiry="2025-12-31",
+        expiry_date=datetime.now(timezone.utc).date(),
+        best_bid=10.0,
+        best_ask=10.0,
+        mark_price=10.0,
+        tick_size=0.1,
+        contract_type="call_options",
+    )
+    entry_outcome = OrderStrategyOutcome(
+        success=True,
+        mode="live",
+        filled_size=1.0,
+        final_status={"id": "entry-1", "average_price": 10.0},
+        attempts=[{"order_id": "entry-1"}],
+    )
+
+    await engine._record_live_orders([(contract, entry_outcome, "sell")])
+    assert len(session.positions) == 1
+    position = session.positions[0]
+    assert position.quantity == pytest.approx(1.0)
+    fees_snapshot = position.analytics.get("fees") or {}
+    entry_fee = fees_snapshot.get("entry")
+    assert entry_fee is not None and entry_fee > 0
+    assert pytest.approx(fees_snapshot.get("total", 0.0)) == entry_fee
+
+    exit_outcome = OrderStrategyOutcome(
+        success=True,
+        mode="live",
+        filled_size=1.0,
+        final_status={"id": "exit-1", "average_price": 8.0},
+        attempts=[{"order_id": "exit-1"}],
+    )
+
+    await engine._record_live_orders([(contract, exit_outcome, "buy")])
+
+    fees_snapshot = position.analytics.get("fees") or {}
+    exit_fee = fees_snapshot.get("exit")
+    assert exit_fee is not None and exit_fee > 0
+    total_fee = fees_snapshot.get("total")
+    assert total_fee == pytest.approx(entry_fee + exit_fee)
+
+    assert position.quantity == pytest.approx(1.0)
+    assert position.entry_price == pytest.approx(10.0)
+    assert position.exit_price == pytest.approx(8.0)
+
+    gross_realized = (position.entry_price - position.exit_price) * position.quantity * config.contract_size
+    assert position.realized_pnl == pytest.approx(gross_realized - total_fee, rel=1e-6)
+    assert position.unrealized_pnl == 0.0
+    assert persist_stub.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_trading_service_panic_action_dispatches_engine(db_session):
     config = TradingConfiguration(name="Panic Service", quantity=1, contract_size=1.0)
     db_session.add(config)
@@ -920,6 +994,7 @@ async def test_record_session_snapshot_persists_metrics(db_session):
             "total_pnl": 10.0,
             "notional": 100.0,
             "total_pnl_pct": 10.0,
+            "fees": 0.0,
         },
         "pnl_history": [{"timestamp": now.isoformat(), "pnl": 10.0}],
     }
@@ -935,6 +1010,7 @@ async def test_record_session_snapshot_persists_metrics(db_session):
             "unrealized": 0.0,
             "total": 10.0,
             "total_pnl": 10.0,
+            "fees": 0.0,
             "exit_reason": "max_profit",
         },
         session_metadata={"summary": summary_payload},

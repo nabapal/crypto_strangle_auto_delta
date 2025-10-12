@@ -2,8 +2,33 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
-
 from pydantic import BaseModel, Field
+
+class OptionFeeQuoteRequest(BaseModel):
+    underlying_price: float = Field(..., description="Current price of underlying asset (e.g. BTC)")
+    contract_size: float = Field(..., description="Size of one contract (e.g. 0.001 BTC)")
+    quantity: int = Field(..., description="Number of contracts")
+    premium: float = Field(..., description="Premium per contract (in quote currency)")
+    order_type: Literal["maker", "taker"] = Field("taker", description="Order type: maker or taker")
+
+class OptionFeeQuoteResponse(BaseModel):
+    underlying_price: float
+    contract_size: float
+    quantity: int
+    premium: float
+    fee_rate: float
+    premium_cap_rate: float
+    notional: float
+    notional_fee: float
+    premium_value: float
+    premium_cap: float
+    fee: float
+    applied_fee: float
+    cap_applied: bool
+    order_type: Literal["maker", "taker"]
+    gst_rate: float
+    total_fee_with_gst: float
+    breakdown: Dict[str, Any]
 
 
 class TradingControlRequest(BaseModel):
@@ -112,6 +137,11 @@ class AnalyticsHistoryMetrics(BaseModel):
     max_gain: float = 0.0
     max_loss: float = 0.0
     max_drawdown: float = 0.0
+    net_pnl: float = 0.0
+    pnl_before_fees: float = 0.0
+    fees_total: float = 0.0
+    average_fee: float = 0.0
+    profitable_days: int = 0
 
 
 class AnalyticsChartPoint(BaseModel):
@@ -131,6 +161,8 @@ class AnalyticsHistoryCharts(BaseModel):
     drawdown: List[AnalyticsChartPoint] = Field(default_factory=list)
     rolling_win_rate: List[AnalyticsChartPoint] = Field(default_factory=list)
     trades_histogram: List[AnalyticsHistogramBucket] = Field(default_factory=list)
+    cumulative_gross_pnl: List[AnalyticsChartPoint] = Field(default_factory=list)
+    cumulative_fees: List[AnalyticsChartPoint] = Field(default_factory=list)
 
 
 class AnalyticsTimelineEntry(BaseModel):
@@ -182,6 +214,7 @@ class StrategyRuntimeTotals(BaseModel):
     total_pnl: float = 0.0
     notional: float = 0.0
     total_pnl_pct: float = 0.0
+    fees: float = 0.0
 
 
 class StrategyRuntimeTrailing(BaseModel):
@@ -227,3 +260,39 @@ class StrategyRuntimeResponse(BaseModel):
     spot: StrategyRuntimeSpot | None = None
     exit_reason: Optional[str] = None
     config: dict | None = None
+
+
+class TradingFeeQuoteRequest(BaseModel):
+    underlying_price: float = Field(..., gt=0, description="Current price of the underlying asset in USD")
+    contracts: float = Field(..., gt=0, description="Number of option contracts to price")
+    contract_size: float = Field(..., gt=0, description="Underlying quantity represented by a single contract")
+    premium: float = Field(..., ge=0, description="Premium per unit of underlying (usually quoted in USD)")
+    order_type: Literal["maker", "taker"] = Field(default="taker")
+    side: Literal["buy", "sell"] = Field(default="buy")
+    fee_rate: float | None = Field(
+        default=None,
+        ge=0,
+        description="Optional override for the taker/maker fee rate (decimal form, e.g. 0.0003)",
+    )
+    premium_cap_rate: float | None = Field(
+        default=None,
+        ge=0,
+        description="Optional override for the premium cap percentage (decimal form, e.g. 0.10)",
+    )
+
+
+class TradingFeeQuoteResponse(BaseModel):
+    underlying_price: float
+    contracts: float
+    contract_size: float
+    premium: float
+    order_type: Literal["maker", "taker"]
+    side: Literal["buy", "sell"]
+    fee_rate: float
+    premium_cap_rate: float
+    notional: float
+    notional_fee: float
+    premium_value: float
+    premium_cap: float
+    fee: float
+    applied_cap: Literal["notional_fee", "premium_cap"]
