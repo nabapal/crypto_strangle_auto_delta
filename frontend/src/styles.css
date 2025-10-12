@@ -37,6 +37,10 @@
   --chart-area-negative-fill: rgba(249, 115, 22, 0.32);
   --chart-line-stroke: #15803d;
   --chart-bar-fill: #4f46e5;
+  --chart-line-gross: #6366f1;
+  --chart-line-fees: #d97706;
+  --card-highlight-border: rgba(14, 116, 144, 0.35);
+  --card-highlight-shadow: 0 16px 36px rgba(14, 116, 144, 0.18);
 }
 
 :root[data-theme="dark"] {
@@ -77,6 +81,10 @@
   --chart-area-negative-fill: rgba(251, 146, 60, 0.35);
   --chart-line-stroke: #4ade80;
   --chart-bar-fill: #8b5cf6;
+  --chart-line-gross: #a855f7;
+  --chart-line-fees: #f59e0b;
+  --card-highlight-border: rgba(56, 189, 248, 0.45);
+  --card-highlight-shadow: 0 18px 42px rgba(2, 6, 23, 0.55);
 }
 
 body {
@@ -108,4 +116,56 @@ body {
 
 .profile-button--stale .ant-avatar {
   font-weight: 600;
+}
+
+.analytics-metric-card--highlight {
+  border-color: var(--card-highlight-border) !important;
+  box-shadow: var(--card-highlight-shadow);
+}
+
+.analytics-metric-card--highlight .ant-typography {
+  color: var(--text-color-primary);
+}
+
+.analytics-group-card {
+  background: var(--card-background-soft);
+  border: 1px solid var(--card-border-color);
+  border-radius: 16px;
+}
+
+.analytics-group-row {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.analytics-summary-item,
+.analytics-group-tile {
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+:root[data-theme="dark"] .analytics-summary-item,
+:root[data-theme="dark"] .analytics-group-tile {
+  background: rgba(15, 23, 42, 0.68);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+.analytics-summary-item:hover,
+.analytics-group-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.analytics-summary-item--primary {
+  border-color: var(--card-highlight-border);
+  box-shadow: var(--card-highlight-shadow);
+}
+
+.analytics-summary-item--primary h4,
+.analytics-summary-item--primary h3 {
+  color: var(--text-color-primary);
 }

@@ -3,7 +3,7 @@ import dayjs, { Dayjs } from "dayjs";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, DatePicker, Empty, Row, Segmented, Space, Switch, Tag, Typography, message } from "antd";
 import { DownloadOutlined } from "@ant-design/icons";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 
 import {
   AnalyticsChartPoint,
@@ -89,11 +89,57 @@ const toChartData = (points: AnalyticsChartPoint[], valueKey = "value") =>
     meta: point.meta ?? undefined
   }));
 
+const cumulativeSeriesLabels: Record<string, string> = {
+  net: "Net PnL",
+  gross: "PnL Before Fees",
+  fees: "Total Fees Paid"
+};
+
+const cumulativeSeriesColors: Record<keyof typeof cumulativeSeriesLabels, string> = {
+  net: "var(--chart-area-positive-stroke)",
+  gross: "var(--chart-line-gross)",
+  fees: "var(--chart-line-fees)"
+};
+
+type MetricDetailConfig = {
+  label: string;
+  value: number;
+  formatter?: (value: number) => string;
+};
+
 type MetricCardConfig = {
   label: string;
   value: number;
   formatter: (value: number) => string;
   subtext?: string;
+  details?: MetricDetailConfig[];
+  highlight?: boolean;
+};
+
+type MetricGroup = {
+  key: string;
+  title: string;
+  description: string;
+  layout: "summary" | "grid";
+  metrics: MetricCardConfig[];
+};
+
+const mergeChartSeries = (
+  seriesMap: Record<string, AnalyticsChartPoint[]>
+): Array<{ timestamp: number } & Record<string, number | undefined>> => {
+  const merged = new Map<string, Record<string, number | undefined>>();
+
+  Object.entries(seriesMap).forEach(([key, points]) => {
+    points.forEach((point) => {
+      const bucket = merged.get(point.timestamp) ?? {};
+      bucket[key] = point.value;
+      merged.set(point.timestamp, bucket);
+    });
+  });
+
+  return Array.from(merged.entries())
+    .map(([timestamp, values]) => ({ timestamp: dayjs(timestamp).valueOf(), ...values }))
+    .sort((a, b) => a.timestamp - b.timestamp);
 };
 
 export default function AnalyticsDashboard() {
@@ -188,15 +234,15 @@ export default function AnalyticsDashboard() {
     }
 
     if (analyticsQuery.error) {
-      const message =
+      const messageText =
         analyticsQuery.error instanceof Error
           ? analyticsQuery.error.message
           : String(analyticsQuery.error ?? "");
-      if (errorRef.current !== message) {
-        errorRef.current = message;
+      if (errorRef.current !== messageText) {
+        errorRef.current = messageText;
         logger.error("Analytics snapshot refresh failed", {
           event: "ui_analytics_refresh_error",
-          message
+          message: messageText
         });
       }
     }
@@ -232,80 +278,128 @@ export default function AnalyticsDashboard() {
     return null;
   }, [analyticsQuery.data?.kpis]);
 
-  const totalPnlAsOf = analyticsQuery.data?.generated_at;
-
   const metrics = historyData?.metrics;
-  const totalPnlSubtext = totalPnlAsOf ? `As of ${formatTimestamp(totalPnlAsOf)}` : undefined;
+  const historyGeneratedAt = historyData?.generated_at;
+  const netPnlSubtext = historyGeneratedAt ? `As of ${formatTimestamp(historyGeneratedAt)}` : undefined;
 
-  const metricsCards = useMemo<MetricCardConfig[]>(() => {
+  const metricGroups = useMemo<MetricGroup[]>(() => {
     if (!metrics) {
       return [];
     }
 
-    const baseCards: MetricCardConfig[] = [
-      { label: "Days Running", value: metrics.days_running, formatter: (val: number) => formatNumber(val) },
-      { label: "Trade Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) },
+    return [
       {
-        label: "Average PnL / Trade",
-        value: metrics.average_pnl,
-        formatter: (val: number) => formatNumber(val, { style: "currency" })
+        key: "performance",
+        title: "Performance Summary",
+        description: "Net results including fees for the selected range.",
+        layout: "summary",
+        metrics: [
+          {
+            label: "Net PnL",
+            value: metrics.net_pnl,
+            formatter: (val: number) => formatNumber(val, { style: "currency" }),
+            subtext: netPnlSubtext,
+            highlight: true
+          },
+          {
+            label: "Total Fees Paid",
+            value: metrics.fees_total,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          },
+          {
+            label: "PnL Before Fees",
+            value: metrics.pnl_before_fees,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          }
+        ]
       },
       {
-        label: "Average Win",
-        value: metrics.average_win,
-        formatter: (val: number) => formatNumber(val, { style: "currency" })
+        key: "activity",
+        title: "Activity Snapshot",
+        description: "Trading cadence and how often sessions finished green.",
+        layout: "grid",
+        metrics: [
+          { label: "Profitable Days", value: metrics.profitable_days, formatter: (val: number) => formatNumber(val) },
+          { label: "Days Running", value: metrics.days_running, formatter: (val: number) => formatNumber(val) },
+          { label: "Trade Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) }
+        ]
       },
       {
-        label: "Average Loss",
-        value: metrics.average_loss,
-        formatter: (val: number) => formatNumber(val, { style: "currency" })
+        key: "averages",
+        title: "Per-Trade Averages",
+        description: "Average outcomes per position, including fees.",
+        layout: "grid",
+        metrics: [
+          {
+            label: "Average PnL / Trade",
+            value: metrics.average_pnl,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          },
+          {
+            label: "Average Fee / Trade",
+            value: metrics.average_fee,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          },
+          {
+            label: "Average Win",
+            value: metrics.average_win,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          },
+          {
+            label: "Average Loss",
+            value: metrics.average_loss,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          }
+        ]
       },
       {
-        label: "Win Rate",
-        value: metrics.win_rate,
-        formatter: (val: number) => formatNumber(val, { style: "percent", maximumFractionDigits: 2 })
+        key: "wins",
+        title: "Win Metrics",
+        description: "Momentum indicators based on recent streaks.",
+        layout: "grid",
+        metrics: [
+          {
+            label: "Win Rate",
+            value: metrics.win_rate,
+            formatter: (val: number) => formatNumber(val, { style: "percent", maximumFractionDigits: 2 })
+          },
+          {
+            label: "Win Streak",
+            value: metrics.consecutive_wins,
+            formatter: (val: number) => formatNumber(val)
+          },
+          {
+            label: "Loss Streak",
+            value: metrics.consecutive_losses,
+            formatter: (val: number) => formatNumber(val)
+          }
+        ]
       },
       {
-        label: "Max Gain",
-        value: metrics.max_gain,
-        formatter: (val: number) => formatNumber(val, { style: "currency" })
-      },
-      {
-        label: "Max Loss",
-        value: metrics.max_loss,
-        formatter: (val: number) => formatNumber(val, { style: "currency" })
-      },
-      {
-        label: "Max Drawdown",
-        value: metrics.max_drawdown,
-        formatter: (val: number) => formatNumber(val, { style: "currency" })
-      },
-      {
-        label: "Win Streak",
-        value: metrics.consecutive_wins,
-        formatter: (val: number) => formatNumber(val)
-      },
-      {
-        label: "Loss Streak",
-        value: metrics.consecutive_losses,
-        formatter: (val: number) => formatNumber(val)
+        key: "risk",
+        title: "Risk Extremes",
+        description: "Largest swings observed during the selected period.",
+        layout: "grid",
+        metrics: [
+          {
+            label: "Max Gain",
+            value: metrics.max_gain,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          },
+          {
+            label: "Max Loss",
+            value: metrics.max_loss,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          },
+          {
+            label: "Max Drawdown",
+            value: metrics.max_drawdown,
+            formatter: (val: number) => formatNumber(val, { style: "currency" })
+          }
+        ]
       }
     ];
-
-    if (totalPnlSnapshot) {
-      return [
-        {
-          label: totalPnlSnapshot.label,
-          value: totalPnlSnapshot.value,
-          formatter: (val: number) => formatNumber(val, { style: "currency" }),
-          subtext: totalPnlSubtext
-        },
-        ...baseCards
-      ];
-    }
-
-    return baseCards;
-  }, [metrics, totalPnlSnapshot, totalPnlSubtext]);
+  }, [metrics, netPnlSubtext]);
 
   const chartsData = useMemo(() => {
     if (!historyData) {
@@ -318,7 +412,19 @@ export default function AnalyticsDashboard() {
     }
 
     return {
-      cumulative: toChartData(historyData.charts.cumulative_pnl, "value"),
+      cumulative: mergeChartSeries({
+        net: historyData.charts.cumulative_pnl,
+        gross: historyData.charts.cumulative_gross_pnl,
+        fees: historyData.charts.cumulative_fees
+      }).map((point) => {
+        const values = point as Record<string, number | undefined> & { timestamp: number };
+        return {
+          timestamp: values.timestamp,
+          net: values["net"] ?? null,
+          gross: values["gross"] ?? null,
+          fees: values["fees"] ?? null
+        };
+      }),
       drawdown: toChartData(historyData.charts.drawdown, "value"),
       winRate: toChartData(historyData.charts.rolling_win_rate, "value"),
       histogram: historyData.charts.trades_histogram.map((bucket) => ({
@@ -331,16 +437,24 @@ export default function AnalyticsDashboard() {
   const hasHistory = Boolean(historyData);
 
   const autoRefreshLabel = autoRefresh ? "On" : "Off";
-  const totalPnlTagValue = totalPnlSnapshot
-    ? formatNumber(totalPnlSnapshot.value, { style: "currency" })
-    : null;
-  const totalPnlTagColor = totalPnlSnapshot
-    ? totalPnlSnapshot.value > 0
+  const netPnlTagValue = metrics
+    ? formatNumber(metrics.net_pnl, { style: "currency" })
+    : totalPnlSnapshot
+      ? formatNumber(totalPnlSnapshot.value, { style: "currency" })
+      : null;
+  const netPnlTagColor = metrics
+    ? metrics.net_pnl > 0
       ? "green"
-      : totalPnlSnapshot.value < 0
+      : metrics.net_pnl < 0
         ? "volcano"
         : "default"
-    : undefined;
+    : totalPnlSnapshot
+      ? totalPnlSnapshot.value > 0
+        ? "green"
+        : totalPnlSnapshot.value < 0
+          ? "volcano"
+          : "default"
+      : undefined;
 
   const tooltipContentStyle = useMemo(
     () => ({
@@ -451,9 +565,9 @@ export default function AnalyticsDashboard() {
             </Col>
             <Col>
               <Space size={8}>
-                {totalPnlTagValue && (
-                  <Tag color={totalPnlTagColor ?? "default"}>
-                    Total PnL: {totalPnlTagValue}
+                {netPnlTagValue && (
+                  <Tag color={netPnlTagColor ?? "default"}>
+                    Net PnL: {netPnlTagValue}
                   </Tag>
                 )}
                 <Tag color="cyan">Trades: {historyData.metrics.trade_count}</Tag>
@@ -471,25 +585,59 @@ export default function AnalyticsDashboard() {
             />
           )}
 
-          <Row gutter={[24, 24]}>
-            {metricsCards.map((metric) => (
-              <Col xs={24} md={12} lg={8} key={metric.label}>
-                <Card bordered>
-                  <Space direction="vertical" size={4}>
-                    <Text type="secondary">{metric.label}</Text>
-                    <Title level={4} style={{ margin: 0 }}>
-                      {metric.formatter(metric.value)}
+          <Space direction="vertical" size={24} style={{ width: "100%" }}>
+            {metricGroups.map((group) => (
+              <Card key={group.key} className="analytics-group-card" bordered={false}>
+                <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                  <div>
+                    <Title level={5} style={{ margin: 0 }}>
+                      {group.title}
                     </Title>
-                    {metric.subtext && (
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        {metric.subtext}
-                      </Text>
-                    )}
-                  </Space>
-                </Card>
-              </Col>
+                    <Text type="secondary">{group.description}</Text>
+                  </div>
+                  {group.layout === "summary" ? (
+                    <div className="analytics-group-row">
+                      {group.metrics.map((metric: MetricGroup["metrics"][number]) => {
+                        const classes = ["analytics-summary-item"];
+                        if (metric.highlight) {
+                          classes.push("analytics-summary-item--primary");
+                        }
+                        return (
+                          <div key={metric.label} className={classes.join(" ")}>
+                          <Text type="secondary">{metric.label}</Text>
+                          <Title level={metric.highlight ? 3 : 4} style={{ margin: 0 }}>
+                            {metric.formatter(metric.value)}
+                          </Title>
+                          {metric.subtext && (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {metric.subtext}
+                            </Text>
+                          )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="analytics-group-row">
+                      {group.metrics.map((metric: MetricGroup["metrics"][number]) => (
+                        <div key={metric.label} className="analytics-group-tile">
+                          <Text type="secondary">{metric.label}</Text>
+                          <Title level={4} style={{ margin: 0 }}>
+                            {metric.formatter(metric.value)}
+                          </Title>
+                          {metric.subtext && (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {metric.subtext}
+                            </Text>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Space>
+              </Card>
             ))}
-          </Row>
+          </Space>
 
           <Row gutter={[24, 24]}>
             <Col xs={24} lg={12}>
@@ -505,6 +653,8 @@ export default function AnalyticsDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid-stroke)" />
                     <XAxis
                       dataKey="timestamp"
+                      type="number"
+                      domain={["dataMin", "dataMax"]}
                       tickFormatter={(value) => dayjs(value).format("MM-DD HH:mm")}
                       tick={{ fill: "var(--chart-axis-tick)" }}
                       axisLine={{ stroke: "var(--chart-axis-line)" }}
@@ -517,19 +667,49 @@ export default function AnalyticsDashboard() {
                       tickLine={{ stroke: "var(--chart-axis-line)" }}
                     />
                     <RechartsTooltip
-                      formatter={(value: number) => currencyFormatter.format(value)}
+                      formatter={(value: number | string | Array<number | string>, name) => {
+                        if (Array.isArray(value)) {
+                          return [value, name];
+                        }
+                        if (typeof value !== "number") {
+                          return ["–", name];
+                        }
+                        return [currencyFormatter.format(value), name];
+                      }}
                       labelFormatter={(label) => dayjs(label).format("MMM D, HH:mm")}
                       contentStyle={tooltipContentStyle}
                       labelStyle={tooltipLabelStyle}
                       itemStyle={tooltipItemStyle}
                     />
+                    <Legend
+                      verticalAlign="top"
+                      height={36}
+                    />
                     <Area
                       type="monotone"
-                      dataKey="value"
-                      stroke="var(--chart-area-positive-stroke)"
+                      dataKey="net"
+                      name={cumulativeSeriesLabels.net}
+                      stroke={cumulativeSeriesColors.net}
                       strokeWidth={2}
                       fillOpacity={1}
                       fill="url(#pnlGradient)"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="gross"
+                      name={cumulativeSeriesLabels.gross}
+                      stroke={cumulativeSeriesColors.gross}
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="fees"
+                      name={cumulativeSeriesLabels.fees}
+                      stroke={cumulativeSeriesColors.fees}
+                      strokeWidth={2}
+                      strokeDasharray="5 3"
+                      dot={false}
                     />
                   </AreaChart>
                 </ResponsiveContainer>

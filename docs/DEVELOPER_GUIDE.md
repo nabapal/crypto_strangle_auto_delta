@@ -1,3 +1,59 @@
+## Option Trading Fee Calculation (Delta Exchange)
+
+### Overview
+Delta Exchange charges a taker/maker fee of 0.03% of the notional size for options trades, with a fee capping feature: the fee is capped at 10% of the premium paid/received. The lower of these two values is charged as the trading fee for both buying and selling options.
+
+### Formula
+- **Notional Size**: `underlying_price * contract_size * quantity`
+- **Notional Fee**: `notional_size * 0.0003`
+- **Premium Value**: `contract_size * quantity * premium`
+- **Premium Cap**: `premium_value * 0.10`
+- **Fee Charged**: `min(notional_fee, premium_cap)`
+
+### API Usage
+To quote the fee for an option trade, use:
+
+```http
+POST /api/trading/fees/quote
+Content-Type: application/json
+
+{
+  "underlying_price": 26200,
+  "contract_size": 0.001,
+  "quantity": 300,
+  "premium": 15,
+  "order_type": "taker"
+}
+```
+
+Response:
+```json
+{
+  "notional": 7860.0,
+  "notional_fee": 2.358,
+  "premium_value": 4.5,
+  "premium_cap": 0.45,
+  "applied_fee": 0.45,
+  "cap_applied": true,
+  "order_type": "taker",
+  "breakdown": {
+    "notional_fee": 2.358,
+    "premium_cap": 0.45,
+    "applied_fee": 0.45,
+    "cap_applied": true
+  }
+}
+```
+
+### Example Calculation
+Trader buys 300 contracts of BTC OTM option at $15 premium, underlying at $26,200:
+- Notional: `26200 * 0.001 * 300 = $7860`
+- Notional Fee: `0.03% * $7860 = $2.36`
+- Premium Value: `0.001 * 300 * $15 = $4.5`
+- Premium Cap: `10% * $4.5 = $0.45`
+- **Fee Charged**: `$0.45` (since premium cap < notional fee)
+
+If the premium cap is higher than the notional fee, the notional fee is charged instead.
 # Delta Strangle Enterprise Platform – Developer Guide
 
 ## Project Overview
@@ -97,6 +153,7 @@ Docker & Ops files
 - **Protected Routes**: `ProtectedRoute` ensures only authenticated users reach dashboard pages.
 - **React Query Hooks**: Under `src/api` & `src/hooks`, encapsulating API calls (config list, runtime, analytics, logs) with caching/polling.
 - **UI Components**: Ant Design forms/tables display configuration panels, PnL charts, log tables, session history, and analytics tiles.
+- **Advanced Analytics Layout**: `AnalyticsDashboard` now renders metrics in grouped rows (`Performance Summary`, `Activity Snapshot`, `Per-Trade Averages`, `Win Metrics`, `Risk Extremes`). The first group highlights net PnL with historical timestamp context, and each group pulls formatter logic from the shared helpers in `AnalyticsDashboard.tsx`. When adding new metrics, extend the appropriate `MetricGroup` so cards inherit responsive grid behavior.
 - **Theme & Time Utilities**: `ThemeProvider` (in `src/context/ThemeContext.tsx`) centralizes Ant Design theming and supports the header light/dark toggle, while `TimeDisplay` renders synchronized UTC/IST timestamps for operators; both are covered by Vitest suites in `src/components/__tests__/ThemeToggle.test.tsx` and `src/components/__tests__/TimeDisplay.test.tsx`.
 
 ---
@@ -277,7 +334,7 @@ This script:
 - Maintain structured logging (JSON) for backend events.
 - Keep bundle sizes manageable—consider `manualChunks` if new pages grow large.
 - Document new environment variables in `.env.example` and README.
-- When touching frontend visuals, extend the CSS variable palette in `src/styles.css` and ensure light/dark contrast stays WCAG-compliant.
+- When touching frontend visuals, extend the CSS variable palette in `src/styles.css` and ensure light/dark contrast stays WCAG-compliant. The analytics dashboard leverages `--chart-line-gross`, `--chart-line-fees`, and grouped card classes (`.analytics-group-card`, `.analytics-summary-item`) to keep layouts consistent across themes.
 - When altering DB models, ensure `Base.metadata.create_all` still succeeds or introduce migrations.
 
 ---
