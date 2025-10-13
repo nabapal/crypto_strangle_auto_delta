@@ -40,6 +40,14 @@ export interface TradingSessionDetail extends TradingSessionSummary {
   positions: Array<Record<string, unknown>>;
 }
 
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
 export interface TradingControlResult {
   strategy_id?: string;
   status: "starting" | "running" | "stopping" | "stopped" | "restarting" | "panic" | "error";
@@ -274,9 +282,31 @@ export const controlTrading = async (action: TradingControlAction, configuration
   return response.data;
 };
 
-export const fetchTradingSessions = async () => {
-  const response = await client.get<TradingSessionSummary[]>("/trading/sessions");
+export const fetchTradingSessions = async (params: { page?: number; page_size?: number } = {}) => {
+  const response = await client.get<PaginatedResponse<TradingSessionSummary>>("/trading/sessions", {
+    params
+  });
   return response.data;
+};
+
+export const exportTradingSessionsCsv = async () => {
+  const response = await client.get<Blob>("/trading/sessions/export", {
+    params: { format: "csv" },
+    responseType: "blob"
+  });
+
+  const dispositionRaw = typeof response.headers.get === "function"
+    ? response.headers.get("content-disposition")
+    : (response.headers as Record<string, string | undefined>)["content-disposition"] ??
+      (response.headers as Record<string, string | undefined>)["Content-Disposition"];
+  const disposition = typeof dispositionRaw === "string" ? dispositionRaw : undefined;
+
+  const filename = parseFilenameFromDisposition(disposition) ?? "trading-sessions.csv";
+
+  return {
+    blob: response.data,
+    filename
+  } satisfies AnalyticsExportResult;
 };
 
 export const fetchTradingSessionDetail = async (sessionId: number) => {

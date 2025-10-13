@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi.encoders import jsonable_encoder
@@ -249,14 +249,24 @@ class TradingService:
             snapshot.setdefault("exit_reason", None)
         return snapshot
 
-    async def get_sessions(self) -> list[StrategySession]:
-        result = await self.session.execute(
-            select(StrategySession).order_by(
-                StrategySession.activated_at.desc().nullslast(),
-                StrategySession.id.desc(),
-            )
+    async def get_sessions(self, *, offset: int = 0, limit: int | None = 50) -> list[StrategySession]:
+        safe_offset = max(offset, 0)
+        stmt = select(StrategySession).order_by(
+            StrategySession.activated_at.desc().nullslast(),
+            StrategySession.id.desc(),
         )
+        stmt = stmt.offset(safe_offset)
+        if limit is not None:
+            safe_limit = max(limit, 0)
+            stmt = stmt.limit(safe_limit)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_sessions(self) -> int:
+        total_stmt = select(func.count()).select_from(StrategySession)
+        result = await self.session.execute(total_stmt)
+        value = result.scalar()
+        return int(value or 0)
 
     async def cleanup_sessions(self) -> int:
         stopped = await self._mark_session_stopped()

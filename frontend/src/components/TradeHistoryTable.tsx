@@ -1,22 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { DownloadOutlined } from "@ant-design/icons";
 import {
   Button,
   Card,
   Descriptions,
   Divider,
   Drawer,
+  message,
   Space,
   Table,
   Tag,
   Typography
 } from "antd";
+import type { TableProps } from "antd";
+import type { TablePaginationConfig } from "antd/es/table/interface";
 
 import {
   TradingSessionDetail,
   TradingSessionSummary,
   fetchTradingSessionDetail,
-  fetchTradingSessions
+  fetchTradingSessions,
+  PaginatedResponse,
+  exportTradingSessionsCsv
 } from "../api/trading";
 import { sharedQueryOptions } from "../api/queryOptions";
 import logger from "../utils/logger";
@@ -95,22 +101,27 @@ const getSummaryValue = (summary: Record<string, unknown> | undefined, keys: str
 
 export default function TradeHistoryTable() {
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [exporting, setExporting] = useState(false);
 
-  const sessionsQuery = useQuery<TradingSessionSummary[]>({
-    queryKey: ["sessions"],
-    queryFn: fetchTradingSessions,
+  const sessionsQuery = useQuery<PaginatedResponse<TradingSessionSummary>>({
+    queryKey: ["sessions", page, pageSize],
+    queryFn: () => fetchTradingSessions({ page, page_size: pageSize }),
+    placeholderData: keepPreviousData,
     ...sharedQueryOptions
   });
 
-  const data = sessionsQuery.data;
-  const isLoading = sessionsQuery.isLoading;
+  const paginatedSessions = sessionsQuery.data;
+  const isLoading = sessionsQuery.isLoading && !paginatedSessions;
 
   const sortedSessions = useMemo(() => {
-    if (!data) {
+    const items = paginatedSessions?.items ?? [];
+    if (items.length === 0) {
       return [] as TradingSessionSummary[];
     }
 
-    return [...data].sort((a, b) => {
+    return [...items].sort((a, b) => {
       const aTime = a.activated_at ? new Date(a.activated_at).getTime() : Number.NEGATIVE_INFINITY;
       const bTime = b.activated_at ? new Date(b.activated_at).getTime() : Number.NEGATIVE_INFINITY;
 
@@ -120,7 +131,7 @@ export default function TradeHistoryTable() {
 
       return (b.id ?? 0) - (a.id ?? 0);
     });
-  }, [data]);
+  }, [paginatedSessions?.items]);
 
   const detailQuery = useQuery<TradingSessionDetail>({
     queryKey: ["session-detail", selectedSessionId],
@@ -137,11 +148,31 @@ export default function TradeHistoryTable() {
         sessionsSuccessRef.current = sessionsQuery.dataUpdatedAt;
         logger.info("Historical sessions loaded", {
           event: "ui_sessions_table_loaded",
-          count: sessionsQuery.data.length
+          count: sessionsQuery.data.items.length,
+          page,
+          page_size: pageSize,
+          total: sessionsQuery.data.total
         });
       }
     }
-  }, [sessionsQuery.data, sessionsQuery.dataUpdatedAt]);
+  }, [sessionsQuery.data, sessionsQuery.dataUpdatedAt, page, pageSize]);
+
+  useEffect(() => {
+    if (!paginatedSessions) {
+      return;
+    }
+    if (paginatedSessions.total > 0 && paginatedSessions.items.length === 0 && page > 1) {
+      const fallbackPage = paginatedSessions.pages > 0 ? paginatedSessions.pages : Math.ceil(paginatedSessions.total / pageSize);
+      if (fallbackPage > 0 && fallbackPage !== page) {
+        setPage(fallbackPage);
+        logger.debug("History pagination adjusted to available page", {
+          event: "ui_sessions_table_page_adjusted",
+          requested_page: page,
+          fallback_page: fallbackPage
+        });
+      }
+    }
+  }, [paginatedSessions, page, pageSize]);
 
   useEffect(() => {
     if (sessionsQuery.isError && sessionsQuery.error) {
@@ -212,6 +243,69 @@ export default function TradeHistoryTable() {
     if (numeric === null) return "--";
     const type: "success" | "danger" | undefined = numeric > 0 ? "success" : numeric < 0 ? "danger" : undefined;
     return <Text type={type}>{formatPercent(numeric)}</Text>;
+  };
+
+  const totalSessions = paginatedSessions?.total ?? 0;
+  const totalPages = paginatedSessions?.pages ?? 0;
+  const tableLoading = sessionsQuery.isFetching;
+
+  const handlePaginationChange = (paginationConfig: TablePaginationConfig) => {
+    const nextPageSize = paginationConfig.pageSize ?? pageSize;
+    const nextPage = paginationConfig.current ?? page;
+
+    if (nextPageSize !== pageSize) {
+      setPageSize(nextPageSize);
+      setPage(1);
+      logger.debug("History pagination size changed", {
+        event: "ui_sessions_table_page_size",
+        next_page_size: nextPageSize
+      });
+      return;
+    }
+
+    if (nextPage !== page) {
+      setPage(nextPage);
+      logger.debug("History pagination changed", {
+        event: "ui_sessions_table_page",
+        next_page: nextPage,
+        total_pages: totalPages
+      });
+    }
+  };
+
+  const handleTableChange: TableProps<TradingSessionSummary>["onChange"] = (paginationConfig) => {
+    if (!paginationConfig) {
+      return;
+    }
+    handlePaginationChange(paginationConfig);
+  };
+
+  const handleExportCsv = async () => {
+    setExporting(true);
+    try {
+      const result = await exportTradingSessionsCsv();
+      const blobUrl = window.URL.createObjectURL(result.blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      message.success("Exported trading sessions CSV");
+      logger.info("Trading sessions CSV exported", {
+        event: "ui_sessions_export_success",
+        filename: result.filename
+      });
+    } catch (error) {
+      logger.error("Failed to export trading sessions", {
+        event: "ui_sessions_export_failed",
+        error
+      });
+      message.error("Failed to export trading sessions");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const columns = [
@@ -499,8 +593,30 @@ export default function TradeHistoryTable() {
 
   return (
     <>
-      <Card loading={isLoading} title={<Title level={4}>Historical Sessions</Title>}>
-  <Table rowKey="id" dataSource={sortedSessions} columns={columns} pagination={false} />
+      <Card
+        loading={isLoading}
+        title={<Title level={4}>Historical Sessions</Title>}
+        extra={
+          <Button type="default" icon={<DownloadOutlined />} onClick={handleExportCsv} loading={exporting}>
+            Export CSV
+          </Button>
+        }
+      >
+        <Table
+          rowKey="id"
+          dataSource={sortedSessions}
+          columns={columns}
+          loading={tableLoading}
+          pagination={{
+            current: page,
+            pageSize,
+            total: totalSessions,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 25, 50, 100],
+            showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}`
+          }}
+          onChange={handleTableChange}
+        />
       </Card>
       <Drawer
         title={detail ? `Session ${detail.strategy_id}` : "Session Details"}

@@ -98,6 +98,70 @@ const formatSpotMetric = (value: unknown) => {
   return `$${formatNumber(numeric)}`;
 };
 
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
+const calculateStrikeDistancePct = (strike: unknown, spot: number | null | undefined): number | null => {
+  const strikeValue = toFiniteNumber(strike);
+  const spotValue = typeof spot === "number" && Number.isFinite(spot) && spot !== 0 ? spot : null;
+  if (strikeValue === null || spotValue === null || spotValue === 0) {
+    return null;
+  }
+  return ((strikeValue - spotValue) / spotValue) * 100;
+};
+
+const formatStrikeDistance = (distancePct: number | null, includeSuffix = true): string | null => {
+  if (distancePct === null || Number.isNaN(distancePct)) {
+    return null;
+  }
+  if (distancePct === 0) {
+    return `0.00%${includeSuffix ? " from spot" : ""}`;
+  }
+  const prefix = distancePct > 0 ? "+" : "-";
+  const formatted = Math.abs(distancePct).toFixed(2);
+  return `${prefix}${formatted}%${includeSuffix ? " from spot" : ""}`;
+};
+
+const extractStrikeFromSymbol = (symbol: unknown, reference?: number | null): number | null => {
+  if (typeof symbol !== "string") {
+    return null;
+  }
+  const segments = symbol.split("-");
+  const candidates = segments
+    .map((segment) => toFiniteNumber(segment))
+    .filter((value): value is number => value !== null);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const referenceValue = typeof reference === "number" && Number.isFinite(reference) ? reference : null;
+  if (referenceValue !== null) {
+    let closest = candidates[0];
+    let smallestDelta = Math.abs(closest - referenceValue);
+    for (let index = 1; index < candidates.length; index += 1) {
+      const delta = Math.abs(candidates[index] - referenceValue);
+      if (delta < smallestDelta) {
+        closest = candidates[index];
+        smallestDelta = delta;
+      }
+    }
+    return closest;
+  }
+
+  return candidates[0];
+};
+
 const parseTimestamp = (value?: string | null): Date | null => {
   if (!value) return null;
   const date = new Date(value);
@@ -300,6 +364,24 @@ export default function TradingControlPanel() {
 
   const { price: spotPrice, lastUpdated: spotUpdatedAt, isConnected: spotConnected, error: spotError } =
     useSpotPriceContext();
+
+  const resolvedSpotPrice = useMemo(() => {
+    const candidates: Array<number | null | undefined> = [
+      spotPrice,
+      backendSpot?.last,
+      backendSpot?.entry,
+      backendSpot?.exit,
+      backendSpot?.high,
+      backendSpot?.low
+    ];
+    for (const candidate of candidates) {
+      const numeric = toFiniteNumber(candidate);
+      if (numeric !== null && numeric > 0) {
+        return numeric;
+      }
+    }
+    return null;
+  }, [spotPrice, backendSpot?.last, backendSpot?.entry, backendSpot?.exit, backendSpot?.high, backendSpot?.low]);
   const spotUpdateRef = useRef<number | null>(null);
   const spotConnectionRef = useRef<boolean | null>(null);
   const spotErrorRef = useRef<string | null>(null);
@@ -753,11 +835,24 @@ export default function TradingControlPanel() {
                     const expiry =
                       (contract.expiry_date as string | undefined) ?? (contract.expiry as string | undefined) ?? null;
                     const contractType = toDisplay(contract.contract_type, "");
+                    const strikeDistancePct = calculateStrikeDistancePct(
+                      contract.strike_price ?? contract.strike ?? extractStrikeFromSymbol(contract.symbol, resolvedSpotPrice),
+                      resolvedSpotPrice
+                    );
+                    const strikeDistanceLabel = formatStrikeDistance(strikeDistancePct);
                     return (
                       <List.Item key={`${symbol}-${index}`}>
                         <Space wrap>
                           <Tag color="blue">{symbol}</Tag>
-                          {delta !== undefined && <Text type="secondary">Δ {formatNumber(delta, 3, 3)}</Text>}
+                          {delta !== undefined && (
+                            <Text type="secondary">
+                              Δ {formatNumber(delta, 3, 3)}
+                              {strikeDistanceLabel ? ` · ${strikeDistanceLabel}` : ""}
+                            </Text>
+                          )}
+                          {delta === undefined && strikeDistanceLabel && (
+                            <Text type="secondary">{strikeDistanceLabel}</Text>
+                          )}
                           {contractType && <Tag>{contractType.toUpperCase()}</Tag>}
                           {contract.strike_price !== undefined && (
                             <Text type="secondary">Strike ${formatNumber(contract.strike_price)}</Text>
@@ -851,6 +946,12 @@ export default function TradingControlPanel() {
                   markTimestampLabelRaw && markTimestampLabelRaw !== "--" ? markTimestampLabelRaw : null;
                 const markDelayLabel = markTimestampRaw ? formatDelayFromTimestamp(markTimestampRaw) : null;
 
+                const strikePriceValue =
+                  toFiniteNumber(position?.strike_price ?? position?.strike) ??
+                  extractStrikeFromSymbol(position.symbol, resolvedSpotPrice);
+                const strikeDistancePct = calculateStrikeDistancePct(strikePriceValue, resolvedSpotPrice);
+                const strikeDistanceLabel = formatStrikeDistance(strikeDistancePct);
+
                 const derivedPnl = (() => {
                   if (Math.abs(rawTotalPnl) > tolerance) {
                     return rawTotalPnl;
@@ -910,6 +1011,7 @@ export default function TradingControlPanel() {
                         </Tag>
                         <Text type="secondary">
                           Realized ${formatCurrency(realizedPnl)} · Unrealized ${formatCurrency(displayUnrealizedPnl)}
+                          {strikeDistanceLabel ? ` · ${strikeDistanceLabel}` : ""}
                         </Text>
                       </Space>
                       {closeReason && <Text type="secondary">Close reason: {closeReason}</Text>}

@@ -1,23 +1,23 @@
 Enhancements Roadmap
 This document tracks the next set of improvements for the Delta Strangle Enterprise Platform, focused on usability and streamlined deployment.
 
-1. Display Strike Distance on Live Control
+1. Display Strike Distance on Live Control ✅ (shipped Oct 12, 2025)
 Show how far the selected CE and PE strikes are from spot when entries occur.
-- Live Control → Entry Execution → Selected Contracts: append “X% away from spot” next to each delta value.
-- Live Control → Position Health cards: inject the percentage distance immediately after the Unrealized PnL value for each leg.
-- Backend should expose the percentage distance if not already available; frontend renders it with two decimal precision.
-- Update tests to cover the new field rendering (including edge cases when spot is missing).
-2. History Tab Paging
+- Live Control → Entry Execution → Selected Contracts now appends “±X.XX% from spot” next to each delta value, using live spot with backend fallbacks.
+- Live Control → Position Health cards surface the same label immediately after the Unrealized PnL value for every leg.
+- Frontend derives the percentage from contract strikes or symbol-encoded strikes; backend strike data remains optional.
+- Manual smoke test: verified distinct percentages for CE/PE during entry and in active positions with BTC spot ~114,778.
+2. History Tab Paging ✅ (shipped Oct 12, 2025)
 Add pagination controls to the history tab (frontend: TradeHistoryTable).
-Backend /api/trading/sessions should accept page and page_size query params and return paged results.
-UI should show page numbers, next/prev, and total count. Default page size: 25 or 50.
-Update tests to cover paging logic and edge cases (empty page, last page, etc).
-3. CSV Export in History Tab
-Add a CSV export button to the history tab.
-Export one row per strategy session (strategy ID), including all session details (start/end time, config, PnL, fees, status, etc).
-Backend endpoint /api/trading/sessions/export?format=csv streams the file; frontend triggers download and shows success/error.
-CSV columns: strategy_id, activated_at, stopped_at, config_snapshot, total_pnl, total_fees, win_rate, trade_count, exit_reason, etc.
-Update tests to verify CSV content and download flow.
+- Backend `/api/trading/sessions` now accepts `page` and `page_size` parameters and responds with a paginated payload including totals and page count.
+- UI renders Ant Design pagination with page/size pickers (10/25/50/100), keeps previous data visible while new pages load, and clamps to the last available page when deletions shrink history.
+- React Query now requests `page`,`page_size` and uses `keepPreviousData` placeholder to avoid flashing.
+- Tests cover newest-first ordering plus dedicated pagination coverage (page size boundaries, disjoint result sets).
+3. CSV Export in History Tab ✅ (shipped Oct 13, 2025)
+Add a CSV export control to the trade history tab with backend streaming support.
+- Backend `/api/trading/sessions/export?format=csv` streams one row per strategy, including spot entry/exit, CE/PE metadata, strike deltas, and distance-from-spot percentages with blanks when data is missing.
+- Frontend button triggers the download, logs success/failure, and surfaces Ant Design toasts while preventing repeat clicks during export.
+- pytest coverage asserts column ordering, CE/PE fallback population, and CSV byte content; manual smoke test compares export to a reference session from staging.
 4. Simple CI/CD Workflow
 Development:
 Developers push feature/fix branches to GitHub (never directly to main).
@@ -30,3 +30,11 @@ Notes:
 No automated GitHub Actions or deployment scripts required for now.
 Document manual test steps and merge criteria in the developer guide.
 Tag releases after production deploys for traceability.
+
+5. Live Control Risk Visualization
+Deliver a live payoff dashboard that reflects the core delta-strangle strategy configuration and runtime limits inside the Live Control tab.
+- Backend: expose a `/trading/risk-snapshot` endpoint built from current positions, configured strikes, contract sizes, trailing stop settings, max profit/loss thresholds, and latest spot data. Generate a payoff ladder at discrete spot intervals using actual leg entry prices/PnL rules (no Black–Scholes greeks). Include markers for trailing SL, max loss, max profit, and breakeven lines.
+- Data model: persist the computed snapshot with runtime metadata so historical sessions and local replays can reuse the visualization without recomputation.
+- Frontend: embed a responsive chart (Recharts/ECharts) that plots payoff vs spot, overlays trailing SL and limit bands, highlights live spot, and displays projected net PnL, realized/unrealized components, and distance-to-threshold annotations.
+- Interaction: allow toggling between “Current Ladder” (using live mark prices) and “Session Entry Ladder” (using entry prices), and provide hover tooltips summarizing leg-wise contribution, active limits, and time since last update.
+- Validation: add backend unit tests to verify payoff ladder calculations against known scenarios, plus UI story/tests to ensure the chart renders with mock snapshots and handles empty or partial data gracefully.

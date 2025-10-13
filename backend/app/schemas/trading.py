@@ -70,6 +70,14 @@ class StrategySessionDetail(StrategySessionSummary):
     monitor_snapshot: dict | None = None
 
 
+class PaginatedStrategySessions(BaseModel):
+    items: list[StrategySessionSummary]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
 class OrderLedgerRecord(BaseModel):
     order_id: str
     symbol: str
