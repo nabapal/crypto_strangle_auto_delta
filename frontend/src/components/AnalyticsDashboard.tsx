@@ -290,8 +290,8 @@ export default function AnalyticsDashboard() {
     return [
       {
         key: "performance",
-        title: "Performance Summary",
-        description: "Net results including fees for the selected range.",
+  title: "Performance Summary",
+  description: "Net results including fees for the selected range.",
         layout: "summary",
         metrics: [
           {
@@ -316,27 +316,27 @@ export default function AnalyticsDashboard() {
       {
         key: "activity",
         title: "Activity Snapshot",
-        description: "Trading cadence and how often sessions finished green.",
+        description: "Strategy cadence and how often sessions finished green.",
         layout: "grid",
         metrics: [
           { label: "Profitable Days", value: metrics.profitable_days, formatter: (val: number) => formatNumber(val) },
           { label: "Days Running", value: metrics.days_running, formatter: (val: number) => formatNumber(val) },
-          { label: "Trade Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) }
+          { label: "Session Count", value: metrics.trade_count, formatter: (val: number) => formatNumber(val) }
         ]
       },
       {
         key: "averages",
-        title: "Per-Trade Averages",
-        description: "Average outcomes per position, including fees.",
+        title: "Per-Session Averages",
+        description: "Average outcomes per strategy session, including fees.",
         layout: "grid",
         metrics: [
           {
-            label: "Average PnL / Trade",
+            label: "Average PnL / Session",
             value: metrics.average_pnl,
             formatter: (val: number) => formatNumber(val, { style: "currency" })
           },
           {
-            label: "Average Fee / Trade",
+            label: "Average Fee / Session",
             value: metrics.average_fee,
             formatter: (val: number) => formatNumber(val, { style: "currency" })
           },
@@ -355,7 +355,7 @@ export default function AnalyticsDashboard() {
       {
         key: "wins",
         title: "Win Metrics",
-        description: "Momentum indicators based on recent streaks.",
+        description: "Momentum indicators based on recent session streaks.",
         layout: "grid",
         metrics: [
           {
@@ -364,12 +364,12 @@ export default function AnalyticsDashboard() {
             formatter: (val: number) => formatNumber(val, { style: "percent", maximumFractionDigits: 2 })
           },
           {
-            label: "Win Streak",
+            label: "Winning Session Streak",
             value: metrics.consecutive_wins,
             formatter: (val: number) => formatNumber(val)
           },
           {
-            label: "Loss Streak",
+            label: "Losing Session Streak",
             value: metrics.consecutive_losses,
             formatter: (val: number) => formatNumber(val)
           }
@@ -570,7 +570,7 @@ export default function AnalyticsDashboard() {
                     Net PnL: {netPnlTagValue}
                   </Tag>
                 )}
-                <Tag color="cyan">Trades: {historyData.metrics.trade_count}</Tag>
+                <Tag color="cyan">Sessions: {historyData.metrics.trade_count}</Tag>
                 <Tag color="purple">Win rate: {historyData.metrics.win_rate.toFixed(2)}%</Tag>
               </Space>
             </Col>
@@ -795,9 +795,9 @@ export default function AnalyticsDashboard() {
             </Col>
 
             <Col xs={24} lg={12}>
-              <Card title="Trade PnL Histogram" bordered>
+              <Card title="Session PnL Histogram" bordered>
                 {chartsData.histogram.length === 0 ? (
-                  <Empty description="No trade distribution" />
+                  <Empty description="No session distribution" />
                 ) : (
                   <ResponsiveContainer width="100%" height={240}>
                     <BarChart data={chartsData.histogram}>

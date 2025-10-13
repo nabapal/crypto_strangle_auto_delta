@@ -104,25 +104,25 @@ async def test_analytics_history_returns_metrics(db_session, auth_headers):
     payload = response.json()
 
     metrics = payload["metrics"]
-    assert metrics["trade_count"] == 2
+    assert metrics["trade_count"] == 1
     assert metrics["win_count"] == 1
-    assert metrics["loss_count"] == 1
-    assert pytest.approx(metrics["max_gain"], rel=1e-3) == 98.5
-    assert pytest.approx(metrics["max_loss"], rel=1e-3) == -51.5
+    assert metrics["loss_count"] == 0
+    assert pytest.approx(metrics["max_gain"], rel=1e-3) == 47.0
+    assert metrics["max_loss"] == 0.0
     assert metrics["consecutive_wins"] == 1
-    assert metrics["consecutive_losses"] == 1
-    assert pytest.approx(metrics["max_drawdown"], rel=1e-3) == 51.5
+    assert metrics["consecutive_losses"] == 0
+    assert metrics["max_drawdown"] == 0.0
     assert pytest.approx(metrics["fees_total"], rel=1e-6) == 3.0
     assert pytest.approx(metrics["pnl_before_fees"], rel=1e-6) == 50.0
     assert pytest.approx(metrics["net_pnl"], rel=1e-6) == 47.0
-    assert pytest.approx(metrics["average_fee"], rel=1e-6) == 1.5
+    assert pytest.approx(metrics["average_fee"], rel=1e-6) == 3.0
     assert metrics["profitable_days"] == 1
 
     charts = payload["charts"]
-    assert len(charts["cumulative_pnl"]) == 2
-    assert len(charts["drawdown"]) == 2
-    assert len(charts["rolling_win_rate"]) == 2
-    assert charts["trades_histogram"][0]["count"] + charts["trades_histogram"][-1]["count"] == 2
+    assert len(charts["cumulative_pnl"]) == 1
+    assert len(charts["drawdown"]) == 1
+    assert len(charts["rolling_win_rate"]) == 1
+    assert charts["trades_histogram"][0]["count"] == 1
 
     timeline = payload["timeline"]
     assert len(timeline) >= 4  # two orders + two position events

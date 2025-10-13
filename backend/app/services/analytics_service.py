@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 from typing import Iterable, Iterator, Optional, Sequence
@@ -29,6 +30,15 @@ from ..schemas.trading import (
 from ..services.logging_utils import logging_context
 
 logger = logging.getLogger("app.analytics")
+
+
+@dataclass
+class SessionRollup:
+    session: StrategySession
+    timestamp: datetime
+    net_total: float
+    gross_total: float
+    fees_total: float
 
 
 class AnalyticsService:
@@ -123,10 +133,13 @@ class AnalyticsService:
         metrics = AnalyticsHistoryMetrics()
         charts = AnalyticsHistoryCharts()
         timeline: list[AnalyticsTimelineEntry] = []
+        rollups: list[SessionRollup] = []
 
         if sessions:
-            metrics = self._compute_metrics(sessions, start_dt, end_dt)
-            charts = self._compute_charts(sessions, start_dt, end_dt)
+            rollups = self._session_rollups(sessions, start_dt, end_dt)
+            if rollups:
+                metrics = self._compute_metrics(rollups)
+                charts = self._compute_charts(rollups)
             timeline = self._build_timeline(sessions, start_dt, end_dt)
 
         latest_ts: Optional[datetime] = None
@@ -415,6 +428,57 @@ class AnalyticsService:
                     orders.append((session, order))
         return orders
 
+    def _session_rollups(
+        self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
+    ) -> list[SessionRollup]:
+        filtered_positions = self._filter_positions(sessions, start_dt, end_dt)
+        positions_by_session: dict[int, list[PositionLedger]] = defaultdict(list)
+        for position in filtered_positions:
+            positions_by_session[position.session_id].append(position)
+
+        rollups: list[SessionRollup] = []
+        for session in sessions:
+            if not self._session_overlaps_range(session, start_dt, end_dt):
+                continue
+
+            session_positions = positions_by_session.get(session.id, [])
+            gross_total = 0.0
+            net_total = 0.0
+            fees_total = 0.0
+
+            timestamps: list[datetime] = []
+            for position in session_positions:
+                gross_realized, net_realized, fee_total = self._net_realized_pnl(position)
+                gross_total += gross_realized
+                net_total += net_realized
+                fees_total += fee_total
+
+                if position.entry_time:
+                    timestamps.append(self._normalize_request_datetime(position.entry_time, start_dt))
+                if position.exit_time:
+                    timestamps.append(self._normalize_request_datetime(position.exit_time, start_dt))
+
+            if session.deactivated_at:
+                timestamps.append(self._normalize_request_datetime(session.deactivated_at, start_dt))
+            if session.activated_at:
+                timestamps.append(self._normalize_request_datetime(session.activated_at, start_dt))
+
+            if not timestamps:
+                timestamps.append(self._normalize_request_datetime(start_dt, start_dt))
+
+            rollups.append(
+                SessionRollup(
+                    session=session,
+                    timestamp=max(timestamps),
+                    net_total=net_total,
+                    gross_total=gross_total,
+                    fees_total=fees_total,
+                )
+            )
+
+        rollups.sort(key=lambda record: record.timestamp)
+        return rollups
+
     @staticmethod
     def _safe_number(value: object) -> float:
         try:
@@ -442,67 +506,58 @@ class AnalyticsService:
         net_realized = realized - fee_total
         return realized, net_realized, fee_total
 
-    def _compute_metrics(
-        self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
-    ) -> AnalyticsHistoryMetrics:
-        positions = self._filter_positions(sessions, start_dt, end_dt)
+    def _compute_metrics(self, rollups: Sequence[SessionRollup]) -> AnalyticsHistoryMetrics:
         metrics = AnalyticsHistoryMetrics()
 
-        if not positions:
-            metrics.days_running = len({self._normalize_request_datetime(s.activated_at, start_dt).date() for s in sessions})
+        if not rollups:
             return metrics
 
-        net_realized_values: list[float] = []
-        gross_realized_values: list[float] = []
-        fee_values: list[float] = []
-        win_flags: list[int] = []
-        trade_datetimes: list[datetime] = []
-        daily_net_totals: defaultdict[date, float] = defaultdict(float)
+        session_count = len(rollups)
+        net_values = [record.net_total for record in rollups]
+        gross_values = [record.gross_total for record in rollups]
+        fee_values = [record.fees_total for record in rollups]
 
-        for position in positions:
-            gross_realized, net_realized, fee_total = self._net_realized_pnl(position)
-            net_realized_values.append(net_realized)
-            gross_realized_values.append(gross_realized)
-            fee_values.append(fee_total)
-            win_flags.append(1 if net_realized > 0 else 0 if net_realized == 0 else -1)
-            exit_ts = position.exit_time or position.entry_time or datetime.now(timezone.utc)
-            trade_datetimes.append(self._normalize_request_datetime(exit_ts, start_dt))
-            trade_day = trade_datetimes[-1].date()
-            daily_net_totals[trade_day] += net_realized
+        wins = [value for value in net_values if value > 0]
+        losses = [value for value in net_values if value < 0]
 
-        metrics.trade_count = len(net_realized_values)
-        metrics.days_running = len({dt.date() for dt in trade_datetimes})
-
-        wins = [value for value in net_realized_values if value > 0]
-        losses = [value for value in net_realized_values if value < 0]
+        metrics.trade_count = session_count
+        metrics.days_running = len({record.timestamp.date() for record in rollups})
         metrics.win_count = len(wins)
         metrics.loss_count = len(losses)
 
-        net_total = sum(net_realized_values)
-        gross_total = sum(gross_realized_values)
+        net_total = sum(net_values)
+        gross_total = sum(gross_values)
         fees_total = sum(fee_values)
 
-        metrics.average_pnl = net_total / metrics.trade_count if metrics.trade_count else 0.0
-        metrics.average_win = sum(wins) / metrics.win_count if metrics.win_count else 0.0
-        metrics.average_loss = sum(losses) / metrics.loss_count if metrics.loss_count else 0.0
-        metrics.win_rate = (metrics.win_count / metrics.trade_count) * 100 if metrics.trade_count else 0.0
-        metrics.max_gain = max(wins) if wins else 0.0
-        metrics.max_loss = min(losses) if losses else 0.0
         metrics.net_pnl = net_total
         metrics.pnl_before_fees = gross_total
         metrics.fees_total = fees_total
-        metrics.average_fee = fees_total / metrics.trade_count if metrics.trade_count else 0.0
+
+        metrics.average_pnl = net_total / session_count if session_count else 0.0
+        metrics.average_win = sum(wins) / len(wins) if wins else 0.0
+        metrics.average_loss = sum(losses) / len(losses) if losses else 0.0
+        metrics.win_rate = (metrics.win_count / session_count) * 100 if session_count else 0.0
+        metrics.max_gain = max(wins) if wins else 0.0
+        metrics.max_loss = min(losses) if losses else 0.0
+        metrics.average_fee = fees_total / session_count if session_count else 0.0
+
+        daily_net_totals: defaultdict[date, float] = defaultdict(float)
+        for record in rollups:
+            daily_net_totals[record.timestamp.date()] += record.net_total
         metrics.profitable_days = sum(1 for total in daily_net_totals.values() if total > 0)
 
-        # Compute streaks
-        sorted_positions = sorted(
-            zip(trade_datetimes, net_realized_values, win_flags), key=lambda item: item[0]
-        )
+        sorted_records = sorted(rollups, key=lambda record: record.timestamp)
         current_win_streak = 0
         current_loss_streak = 0
         best_win_streak = 0
         best_loss_streak = 0
-        for _, pnl_value, flag in sorted_positions:
+
+        cumulative = 0.0
+        running_high = 0.0
+        max_drawdown = 0.0
+
+        for record in sorted_records:
+            pnl_value = record.net_total
             if pnl_value > 0:
                 current_win_streak += 1
                 best_win_streak = max(best_win_streak, current_win_streak)
@@ -514,38 +569,22 @@ class AnalyticsService:
             else:
                 current_win_streak = 0
                 current_loss_streak = 0
-        metrics.consecutive_wins = best_win_streak
-        metrics.consecutive_losses = best_loss_streak
 
-        # Drawdown from cumulative PnL
-        cumulative = 0.0
-        running_high = 0.0
-        max_drawdown = 0.0
-        for _, pnl_value, _ in sorted_positions:
             cumulative += pnl_value
             running_high = max(running_high, cumulative)
             drawdown = running_high - cumulative
             max_drawdown = max(max_drawdown, drawdown)
+
+        metrics.consecutive_wins = best_win_streak
+        metrics.consecutive_losses = best_loss_streak
         metrics.max_drawdown = max_drawdown
 
         return metrics
 
-    def _compute_charts(
-        self, sessions: Sequence[StrategySession], start_dt: datetime, end_dt: datetime
-    ) -> AnalyticsHistoryCharts:
-        positions = self._filter_positions(sessions, start_dt, end_dt)
+    def _compute_charts(self, rollups: Sequence[SessionRollup]) -> AnalyticsHistoryCharts:
         charts = AnalyticsHistoryCharts()
-        if not positions:
+        if not rollups:
             return charts
-
-        points: list[tuple[datetime, float, float, float]] = []
-        for position in positions:
-            event_time = position.exit_time or position.entry_time or start_dt
-            normalized_time = self._normalize_request_datetime(event_time, start_dt)
-            gross_realized, net_realized, fee_total = self._net_realized_pnl(position)
-            points.append((normalized_time, net_realized, gross_realized, fee_total))
-
-        points.sort(key=lambda item: item[0])
 
         cumulative = 0.0
         cumulative_gross = 0.0
@@ -553,6 +592,7 @@ class AnalyticsService:
         running_high = 0.0
         window = 10
         win_window: list[int] = []
+
         cumulative_points: list[AnalyticsChartPoint] = []
         cumulative_gross_points: list[AnalyticsChartPoint] = []
         cumulative_fee_points: list[AnalyticsChartPoint] = []
@@ -561,20 +601,25 @@ class AnalyticsService:
 
         histogram_values: list[float] = []
 
-        for timestamp, net_realized, gross_realized, fee_total in points:
-            cumulative += net_realized
-            cumulative_gross += gross_realized
-            cumulative_fees += fee_total
+        for record in sorted(rollups, key=lambda item: item.timestamp):
+            timestamp = record.timestamp
+            net_total = record.net_total
+            gross_total = record.gross_total
+            fees_total = record.fees_total
+
+            cumulative += net_total
+            cumulative_gross += gross_total
+            cumulative_fees += fees_total
             running_high = max(running_high, cumulative)
             drawdown = running_high - cumulative
-            histogram_values.append(net_realized)
+            histogram_values.append(net_total)
 
             cumulative_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative))
             cumulative_gross_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative_gross))
             cumulative_fee_points.append(AnalyticsChartPoint(timestamp=timestamp, value=cumulative_fees))
             drawdown_points.append(AnalyticsChartPoint(timestamp=timestamp, value=drawdown))
 
-            win_flag = 1 if net_realized > 0 else 0
+            win_flag = 1 if net_total > 0 else 0
             win_window.append(win_flag)
             if len(win_window) > window:
                 win_window.pop(0)
