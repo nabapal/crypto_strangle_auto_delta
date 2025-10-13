@@ -66,6 +66,7 @@ class InvalidExpiryError(ValueError):
 class OptionContract:
     symbol: str
     product_id: int
+    underlying: str
     delta: float
     strike_price: float
     expiry: str
@@ -1433,6 +1434,15 @@ class TradingEngine:
         except ValueError:
             return None
 
+    @staticmethod
+    def _parse_underlying_symbol(symbol: str | None) -> str | None:
+        if not symbol:
+            return None
+        parts = symbol.split("-")
+        if parts and parts[0]:
+            return parts[0].upper()
+        return None
+
     def _select_contracts(self, ticker_payload: List[Dict[str, Any]], config: TradingConfiguration) -> List[OptionContract]:
         delta_low = float(cast(float, getattr(config, "delta_range_low", 0.0) or 0.0))
         delta_high = float(cast(float, getattr(config, "delta_range_high", 1.0) or 1.0))
@@ -1440,12 +1450,43 @@ class TradingEngine:
         filtered: List[OptionContract] = []
         expiry_groups: dict[date, dict[str, List[OptionContract]]] = {}
         missing_by_type: dict[str, List[OptionContract]] = {"call": [], "put": []}
+        expected_underlying = str(getattr(config, "underlying", "") or "BTC").upper()
+        mismatched_underlyings: set[str] = set()
+        mismatched_underlyings_by_type: dict[str, set[str]] = {"call": set(), "put": set()}
 
         for ticker in ticker_payload:
             greeks = ticker.get("greeks") or {}
             delta = abs(float(greeks.get("delta", 0)))
             if not (delta_low <= delta <= delta_high):
                 continue
+            symbol = str(ticker.get("symbol") or "")
+            underlying_symbol = str(
+                ticker.get("underlying_asset_symbol")
+                or ticker.get("underlying_asset")
+                or ticker.get("underlying_symbol")
+                or ""
+            ).upper()
+            if not underlying_symbol:
+                parsed_underlying = self._parse_underlying_symbol(symbol)
+                if parsed_underlying:
+                    underlying_symbol = parsed_underlying
+            if underlying_symbol and underlying_symbol != expected_underlying:
+                mismatched_underlyings.add(underlying_symbol)
+                option_type = ticker.get("contract_type", "").lower()
+                key = "call" if "call" in option_type else "put"
+                mismatched_underlyings_by_type[key].add(underlying_symbol)
+                logger.debug(
+                    "Skipping contract due to underlying mismatch",
+                    extra={
+                        "event": "contract_underlying_skipped",
+                        "symbol": symbol,
+                        "underlying": underlying_symbol,
+                        "expected_underlying": expected_underlying,
+                    },
+                )
+                continue
+            if not underlying_symbol:
+                underlying_symbol = expected_underlying
             expiry_display, expiry_dt = self._extract_expiry_metadata(ticker)
             best_bid = self._optional_price(ticker.get("best_bid_price"))
             if best_bid is None:
@@ -1457,8 +1498,9 @@ class TradingEngine:
             tick_size_value = self._to_float(ticker.get("tick_size"), 0.1) or 0.1
 
             contract = OptionContract(
-                symbol=ticker["symbol"],
+                symbol=symbol,
                 product_id=int(ticker.get("product_id", 0) or 0),
+                underlying=underlying_symbol,
                 delta=delta,
                 strike_price=self._to_float(ticker.get("strike_price"), 0.0),
                 expiry=expiry_display,
@@ -1478,6 +1520,11 @@ class TradingEngine:
             bucket[key].append(contract)
 
         if not filtered:
+            if mismatched_underlyings:
+                raise RuntimeError(
+                    "No option contracts matched the configured underlying; "
+                    f"found underlyings={sorted(mismatched_underlyings)} expected={expected_underlying}"
+                )
             raise RuntimeError("No contracts found within delta range")
 
         target_expiry = self._resolve_target_expiry_date(config)
@@ -1540,6 +1587,21 @@ class TradingEngine:
             if not puts:
                 puts = missing_by_type["put"]
 
+        if not calls:
+            if mismatched_underlyings_by_type["call"]:
+                raise RuntimeError(
+                    "No call option contracts matched the configured underlying; "
+                    f"found underlyings={sorted(mismatched_underlyings_by_type['call'])} expected={expected_underlying}"
+                )
+            raise RuntimeError("No suitable call option contracts found after expiry filtering")
+        if not puts:
+            if mismatched_underlyings_by_type["put"]:
+                raise RuntimeError(
+                    "No put option contracts matched the configured underlying; "
+                    f"found underlyings={sorted(mismatched_underlyings_by_type['put'])} expected={expected_underlying}"
+                )
+            raise RuntimeError("No suitable put option contracts found after expiry filtering")
+
         call_contract = pick_best(calls)
         put_contract = pick_best(puts)
         if call_contract.expiry_date != put_contract.expiry_date:
@@ -1547,6 +1609,16 @@ class TradingEngine:
                 "Selected contracts have differing expiries call=%s put=%s",
                 call_contract.expiry,
                 put_contract.expiry,
+            )
+        if call_contract.underlying != put_contract.underlying:
+            logger.error(
+                "Selected contracts have differing underlyings call=%s put=%s expected=%s",
+                call_contract.underlying,
+                put_contract.underlying,
+                expected_underlying,
+            )
+            raise RuntimeError(
+                "Selected contracts span multiple underlyings; verify underlying asset configuration."
             )
 
         return [call_contract, put_contract]
@@ -2242,9 +2314,20 @@ class TradingEngine:
         best_ask = self._optional_price(result.get("best_ask_price") or result.get("best_ask"))
         mark_price = self._optional_price(result.get("mark_price") or result.get("fair_price"))
         tick_size_value = self._to_float(result.get("tick_size"), 0.1) or 0.1
+        underlying_symbol = str(
+            result.get("underlying_asset_symbol")
+            or result.get("underlying_asset")
+            or result.get("underlying_symbol")
+            or ""
+        ).upper()
+        if not underlying_symbol:
+            parsed_underlying = self._parse_underlying_symbol(symbol)
+            if parsed_underlying:
+                underlying_symbol = parsed_underlying
         return OptionContract(
             symbol=symbol,
             product_id=int(product_id),
+            underlying=underlying_symbol or "",
             delta=abs(self._to_float(result.get("greeks", {}).get("delta") if result.get("greeks") else 0.0, 0.0)),
             strike_price=self._to_float(result.get("strike_price"), 0.0),
             expiry=expiry_display or symbol,

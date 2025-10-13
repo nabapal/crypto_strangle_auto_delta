@@ -404,6 +404,48 @@ def test_select_contracts_prefers_highest_delta():
     assert pytest.approx(call.delta, rel=1e-6) == 0.19
     assert put.product_id == 22
     assert pytest.approx(put.delta, rel=1e-6) == 0.18
+    assert call.underlying == "BTC"
+    assert put.underlying == "BTC"
+
+
+def test_select_contracts_rejects_mismatched_underlyings():
+    engine = TradingEngine()
+    future_expiry = (datetime.now(timezone.utc) + timedelta(days=7)).date()
+    config = TradingConfiguration(
+        name="Underlying Guard",
+        underlying="BTC",
+        delta_range_low=0.1,
+        delta_range_high=0.2,
+        expiry_date=future_expiry.strftime("%d-%m-%Y"),
+    )
+
+    tickers = [
+        {
+            "symbol": "ETH-06OCT25-3500-C",
+            "product_id": 11,
+            "contract_type": "call_options",
+            "greeks": {"delta": 0.15},
+            "strike_price": 3500,
+            "expiry_date": f"{future_expiry.isoformat()}T08:00:00Z",
+            "best_bid_price": 5.0,
+            "best_ask_price": 6.0,
+            "tick_size": 0.1,
+        },
+        {
+            "symbol": "BTC-06OCT25-58000-P",
+            "product_id": 22,
+            "contract_type": "put_options",
+            "greeks": {"delta": -0.16},
+            "strike_price": 58000,
+            "expiry_date": f"{future_expiry.isoformat()}T08:00:00Z",
+            "best_bid_price": 7.0,
+            "best_ask_price": 8.0,
+            "tick_size": 0.1,
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="underlyings"):
+        engine._select_contracts(tickers, config)
 
 
 @pytest.mark.asyncio
@@ -426,6 +468,7 @@ async def test_place_live_order_payload_formatting():
     contract = OptionContract(
         symbol="BTC-06OCT25-58000-C",
         product_id=123,
+        underlying="BTC",
         delta=0.15,
         strike_price=58000,
         expiry="2025-10-06",
@@ -771,6 +814,7 @@ async def test_limit_order_uses_best_ask_for_buy():
     contract = OptionContract(
         symbol="C-BTC-95000-310125",
         product_id=123,
+        underlying="BTC",
         delta=0.12,
         strike_price=95000,
         expiry="310125",
@@ -827,6 +871,7 @@ async def test_limit_order_uses_best_bid_for_sell():
     contract = OptionContract(
         symbol="P-BTC-95000-310125",
         product_id=321,
+        underlying="BTC",
         delta=0.12,
         strike_price=95000,
         expiry="310125",
@@ -864,6 +909,7 @@ async def test_live_order_recording_deducts_fees_from_net_pnl(monkeypatch):
     contract = OptionContract(
         symbol="BTC-TEST-50000-C",
         product_id=101,
+        underlying="BTC",
         delta=0.1,
         strike_price=50000,
         expiry="2025-12-31",
@@ -886,6 +932,7 @@ async def test_live_order_recording_deducts_fees_from_net_pnl(monkeypatch):
     assert len(session.positions) == 1
     position = session.positions[0]
     assert position.quantity == pytest.approx(1.0)
+    assert isinstance(position.analytics, dict)
     fees_snapshot = position.analytics.get("fees") or {}
     entry_fee = fees_snapshot.get("entry")
     assert entry_fee is not None and entry_fee > 0
@@ -901,6 +948,7 @@ async def test_live_order_recording_deducts_fees_from_net_pnl(monkeypatch):
 
     await engine._record_live_orders([(contract, exit_outcome, "buy")])
 
+    assert isinstance(position.analytics, dict)
     fees_snapshot = position.analytics.get("fees") or {}
     exit_fee = fees_snapshot.get("exit")
     assert exit_fee is not None and exit_fee > 0
@@ -911,6 +959,7 @@ async def test_live_order_recording_deducts_fees_from_net_pnl(monkeypatch):
     assert position.entry_price == pytest.approx(10.0)
     assert position.exit_price == pytest.approx(8.0)
 
+    assert position.exit_price is not None
     gross_realized = (position.entry_price - position.exit_price) * position.quantity * config.contract_size
     assert position.realized_pnl == pytest.approx(gross_realized - total_fee, rel=1e-6)
     assert position.unrealized_pnl == 0.0
