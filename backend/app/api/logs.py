@@ -387,13 +387,18 @@ async def backend_log_summary(
         if row[0]
     ]
 
-    latest_entry_stmt = select(BackendLogEntry.logged_at).order_by(BackendLogEntry.logged_at.desc()).limit(1)
+    latest_entry_stmt = select(BackendLogEntry).order_by(BackendLogEntry.logged_at.desc()).limit(1)
     if filters:
         latest_entry_stmt = latest_entry_stmt.where(*filters)
     latest_entry_result = await session.execute(latest_entry_stmt)
-    latest_entry_at = latest_entry_result.scalar_one_or_none()
-    if latest_entry_at:
-        latest_entry_at = _ensure_utc(latest_entry_at)
+    latest_entry = latest_entry_result.scalars().first()
+
+    latest_entry_at = None
+    latest_ingested_at = None
+    if latest_entry:
+        latest_entry_at = _ensure_utc(latest_entry.logged_at)
+        if latest_entry.ingested_at:
+            latest_ingested_at = _ensure_utc(latest_entry.ingested_at)
 
     normalized_level = level.upper() if level else None
 
@@ -424,10 +429,13 @@ async def backend_log_summary(
     latest_error = await _fetch_latest_for_level("ERROR")
     latest_warning = await _fetch_latest_for_level("WARN")
 
-    now = datetime.now(timezone.utc)
-    ingestion_lag_seconds = (
-        max((now - latest_entry_at).total_seconds(), 0.0) if latest_entry_at else None
-    )
+    if latest_entry_at and latest_ingested_at:
+        ingestion_lag_seconds = max((latest_ingested_at - latest_entry_at).total_seconds(), 0.0)
+    elif latest_entry_at:
+        now = datetime.now(timezone.utc)
+        ingestion_lag_seconds = max((now - latest_entry_at).total_seconds(), 0.0)
+    else:
+        ingestion_lag_seconds = None
 
     return BackendLogSummary(
         total=total,

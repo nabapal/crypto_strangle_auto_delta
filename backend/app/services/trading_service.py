@@ -154,9 +154,7 @@ class TradingService:
     async def runtime_snapshot(self) -> dict[str, Any]:
         snapshot = await self.engine.runtime_snapshot()
         if snapshot.get("status") == "idle":
-            stmt = select(StrategySession).order_by(StrategySession.activated_at.desc())
-            result = await self.session.execute(stmt)
-            latest = result.scalars().first()
+            latest = await self._latest_session_for_runtime()
             if latest:
                 snapshot.setdefault("strategy_id", latest.strategy_id)
                 snapshot.setdefault("session_id", latest.id)
@@ -248,6 +246,26 @@ class TradingService:
             )
             snapshot.setdefault("exit_reason", None)
         return snapshot
+
+    async def _latest_session_for_runtime(self) -> StrategySession | None:
+        running_stmt = (
+            select(StrategySession)
+            .where(StrategySession.status == "running")
+            .order_by(StrategySession.activated_at.desc().nullslast(), StrategySession.id.desc())
+            .limit(1)
+        )
+        running_result = await self.session.execute(running_stmt)
+        running = running_result.scalars().first()
+        if running:
+            return running
+
+        fallback_stmt = (
+            select(StrategySession)
+            .order_by(StrategySession.activated_at.desc().nullslast(), StrategySession.id.desc())
+            .limit(1)
+        )
+        fallback_result = await self.session.execute(fallback_stmt)
+        return fallback_result.scalars().first()
 
     async def get_sessions(self, *, offset: int = 0, limit: int | None = 50) -> list[StrategySession]:
         safe_offset = max(offset, 0)

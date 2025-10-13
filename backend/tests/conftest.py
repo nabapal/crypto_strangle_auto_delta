@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncConnection
 
 # Configure an isolated SQLite database for tests before importing the shared engine
@@ -51,8 +51,16 @@ async def prepare_database():
 @pytest_asyncio.fixture()
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
-        yield session
-        await session.rollback()
+        # Tests commit transactions to persist data for API calls, so ensure each test
+        # starts from a clean database snapshot to avoid cross-test contamination.
+        for table in reversed(Base.metadata.sorted_tables):
+            await session.execute(text(f"DELETE FROM {table.name}"))
+        await session.commit()
+
+        try:
+            yield session
+        finally:
+            await session.rollback()
 
 
 @pytest_asyncio.fixture()

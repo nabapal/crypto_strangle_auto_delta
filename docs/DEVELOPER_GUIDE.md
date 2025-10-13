@@ -1,13 +1,13 @@
 ## Option Trading Fee Calculation (Delta Exchange)
 
 ### Overview
-Delta Exchange charges a taker/maker fee of 0.03% of the notional size for options trades, with a fee capping feature: the fee is capped at 10% of the premium paid/received. The lower of these two values is charged as the trading fee for both buying and selling options.
+Delta Exchange charges a taker/maker fee of 0.015% of the notional size for options trades (Monsoon Offer, 50% OFF), with a fee capping feature: the fee is capped at 5% of the premium paid/received. The lower of these two values is charged as the trading fee for both buying and selling options.
 
 ### Formula
 - **Notional Size**: `underlying_price * contract_size * quantity`
-- **Notional Fee**: `notional_size * 0.0003`
+- **Notional Fee**: `notional_size * 0.00015`
 - **Premium Value**: `contract_size * quantity * premium`
-- **Premium Cap**: `premium_value * 0.10`
+- **Premium Cap**: `premium_value * 0.05`
 - **Fee Charged**: `min(notional_fee, premium_cap)`
 
 ### API Usage
@@ -30,10 +30,10 @@ Response:
 ```json
 {
   "notional": 7860.0,
-  "notional_fee": 2.358,
+  "notional_fee": 1.179,
   "premium_value": 4.5,
-  "premium_cap": 0.45,
-  "applied_fee": 0.45,
+  "premium_cap": 0.225,
+  "applied_fee": 0.225,
   "cap_applied": true,
   "order_type": "taker",
   "breakdown": {
@@ -48,10 +48,10 @@ Response:
 ### Example Calculation
 Trader buys 300 contracts of BTC OTM option at $15 premium, underlying at $26,200:
 - Notional: `26200 * 0.001 * 300 = $7860`
-- Notional Fee: `0.03% * $7860 = $2.36`
+- Notional Fee: `0.015% * $7860 = $1.179`
 - Premium Value: `0.001 * 300 * $15 = $4.5`
-- Premium Cap: `10% * $4.5 = $0.45`
-- **Fee Charged**: `$0.45` (since premium cap < notional fee)
+- Premium Cap: `5% * $4.5 = $0.225`
+- **Fee Charged**: `$0.225` (since premium cap < notional fee)
 
 If the premium cap is higher than the notional fee, the notional fee is charged instead.
 # Delta Strangle Enterprise Platform – Developer Guide

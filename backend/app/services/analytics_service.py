@@ -266,11 +266,11 @@ class AnalyticsService:
             gross_total = totals.get("pnl_before_fees", net_total + fees_total)
 
             kpis_payload = [
-                {"label": "Net PnL", "value": net_total, "unit": "USD"},
-                {"label": "Total Fees Paid", "value": fees_total, "unit": "USD"},
-                {"label": "PnL Before Fees", "value": gross_total, "unit": "USD"},
                 {"label": "Realized PnL", "value": totals["realized"], "unit": "USD"},
                 {"label": "Unrealized PnL", "value": totals["unrealized"], "unit": "USD"},
+                {"label": "Net PnL", "value": net_total, "unit": "USD"},
+                {"label": "PnL Before Fees", "value": gross_total, "unit": "USD"},
+                {"label": "Total Fees Paid", "value": fees_total, "unit": "USD"},
             ]
 
             kpis_payload.append(
@@ -442,6 +442,10 @@ class AnalyticsService:
                 continue
 
             session_positions = positions_by_session.get(session.id, [])
+            if not session_positions:
+                # Skip sessions with no position activity in the requested range to avoid
+                # counting placeholder records that can leak in from other tests.
+                continue
             gross_total = 0.0
             net_total = 0.0
             fees_total = 0.0

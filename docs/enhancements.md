@@ -38,3 +38,9 @@ Deliver a live payoff dashboard that reflects the core delta-strangle strategy c
 - Frontend: embed a responsive chart (Recharts/ECharts) that plots payoff vs spot, overlays trailing SL and limit bands, highlights live spot, and displays projected net PnL, realized/unrealized components, and distance-to-threshold annotations.
 - Interaction: allow toggling between “Current Ladder” (using live mark prices) and “Session Entry Ladder” (using entry prices), and provide hover tooltips summarizing leg-wise contribution, active limits, and time since last update.
 - Validation: add backend unit tests to verify payoff ladder calculations against known scenarios, plus UI story/tests to ensure the chart renders with mock snapshots and handles empty or partial data gracefully.
+
+6. Advanced Analytics Session Rollups ✅ (shipped Oct 13, 2025)
+Analytics dashboard KPIs, streaks, and charts now operate on per-strategy session totals rather than individual legs.
+- Backend session rollups aggregate net/gross PnL, fees, win/loss flags, streaks, and drawdown for each strategy before emitting history metrics and chart points.
+- Frontend updates rename dashboard labels (e.g., session count, per-session averages, session histogram) and adjust tooltips to match the new aggregation level.
+- Updated pytest coverage verifies the session-level rollups and chart counts match the new semantics.

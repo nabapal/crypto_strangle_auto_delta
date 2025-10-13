@@ -593,24 +593,26 @@ export default function TradingControlPanel() {
     typeof effectiveLossPct === "number" &&
     Math.abs(effectiveLossPct - maxLossPct) > 0.0001;
 
-  const backendSpotSessionLine = backendSpot
+  const backendSpotSessionMetrics = backendSpot
     ? [
-        `Session Last ${formatSpotMetric(backendSpot.last)}`,
-        `High ${formatSpotMetric(backendSpot.high)}`,
-        `Low ${formatSpotMetric(backendSpot.low)}`
-      ].join(" · ")
-    : null;
-  const backendSpotEntryLine = backendSpot
-    ? [
-        `Entry ${formatSpotMetric(backendSpot.entry)}`,
-        backendSpot.exit !== null && backendSpot.exit !== undefined
-          ? `Exit ${formatSpotMetric(backendSpot.exit)}`
-          : null,
-        backendSpot.updated_at ? `Updated ${formatDateTime(backendSpot.updated_at)}` : null
+        { key: "session-last", label: "Session Last", value: formatSpotMetric(backendSpot.last) },
+        { key: "high", label: "High", value: formatSpotMetric(backendSpot.high) },
+        { key: "low", label: "Low", value: formatSpotMetric(backendSpot.low) }
       ]
-        .filter(Boolean)
-        .join(" · ")
-    : null;
+    : [];
+  const backendSpotEntryMetrics = backendSpot
+    ? (
+        [
+          { key: "entry", label: "Entry", value: formatSpotMetric(backendSpot.entry) },
+          backendSpot.exit !== null && backendSpot.exit !== undefined
+            ? { key: "exit", label: "Exit", value: formatSpotMetric(backendSpot.exit) }
+            : null,
+          backendSpot.updated_at
+            ? { key: "session-updated", label: "Updated", value: formatDateTime(backendSpot.updated_at) }
+            : null
+        ].filter(Boolean) as Array<{ key: string; label: string; value: string }>
+      )
+    : [];
 
   const canStart = runtimeStatus === "idle" || runtimeStatus === "cooldown";
   const canStop = runtimeStatus === "entering" || runtimeStatus === "live" || runtimeStatus === "waiting";
@@ -759,15 +761,33 @@ export default function TradingControlPanel() {
               ? `Updated ${spotUpdatedAt.toLocaleTimeString()}`
               : "Awaiting price feed"}
           </Text>
-          {backendSpotSessionLine && (
-            <Text type="secondary" style={{ display: "block" }}>
-              {backendSpotSessionLine}
-            </Text>
+          {backendSpotSessionMetrics.length > 0 && (
+            <Descriptions
+              size="small"
+              column={1}
+              colon
+              style={{ marginTop: 4, fontVariantNumeric: "tabular-nums" }}
+            >
+              {backendSpotSessionMetrics.map(({ key, label, value }) => (
+                <Descriptions.Item key={key} label={label}>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{value}</span>
+                </Descriptions.Item>
+              ))}
+            </Descriptions>
           )}
-          {backendSpotEntryLine && (
-            <Text type="secondary" style={{ display: "block" }}>
-              {backendSpotEntryLine}
-            </Text>
+          {backendSpotEntryMetrics.length > 0 && (
+            <Descriptions
+              size="small"
+              column={1}
+              colon
+              style={{ marginTop: 4, fontVariantNumeric: "tabular-nums" }}
+            >
+              {backendSpotEntryMetrics.map(({ key, label, value }) => (
+                <Descriptions.Item key={key} label={label}>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{value}</span>
+                </Descriptions.Item>
+              ))}
+            </Descriptions>
           )}
         </Col>
       </Row>

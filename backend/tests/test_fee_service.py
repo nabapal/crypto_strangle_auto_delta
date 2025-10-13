@@ -13,13 +13,13 @@ def test_fee_capping_applies():
     )
 
     assert result["notional"] == pytest.approx(7860)
-    assert result["notional_fee"] == pytest.approx(2.358)
+    assert result["notional_fee"] == pytest.approx(1.179)
     assert result["premium_value"] == pytest.approx(4.5)
-    assert result["premium_cap"] == pytest.approx(0.45)
-    assert result["applied_fee"] == pytest.approx(0.45)
+    assert result["premium_cap"] == pytest.approx(0.225)
+    assert result["applied_fee"] == pytest.approx(0.225)
     assert result["cap_applied"] is True
-    assert result["fee_rate"] == pytest.approx(0.0003)
-    assert result["premium_cap_rate"] == pytest.approx(0.10)
+    assert result["fee_rate"] == pytest.approx(0.00015)
+    assert result["premium_cap_rate"] == pytest.approx(0.05)
 
 
 def test_fee_capping_not_applies():
@@ -31,7 +31,7 @@ def test_fee_capping_not_applies():
         order_type="maker",
     )
 
-    assert result["applied_fee"] == pytest.approx(0.3)
+    assert result["applied_fee"] == pytest.approx(0.15)
     assert result["cap_applied"] is False
 
 

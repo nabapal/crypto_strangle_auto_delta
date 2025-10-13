@@ -108,6 +108,8 @@ SESSION_EXPORT_HEADERS = [
     "pe_distance_pct",
 ]
 
+DEFAULT_API_PREMIUM_CAP_RATE = 0.05
+
 
 def _to_float(value: Any) -> float | None:
     if value is None:
@@ -348,6 +350,7 @@ async def quote_option_fee(payload: OptionFeeQuoteRequest):
             quantity=payload.quantity,
             premium=payload.premium,
             order_type=payload.order_type,
+            premium_cap_rate=DEFAULT_API_PREMIUM_CAP_RATE,
         )
         return OptionFeeQuoteResponse(**result)
     except FeeCalculationError as exc:
@@ -421,11 +424,12 @@ async def export_sessions(
 
     service = TradingService(session)
     sessions = await service.get_sessions(limit=None)
+    sessions_sorted = sorted(sessions, key=lambda item: item.id or 0, reverse=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"trading-sessions-{timestamp}.csv"
 
-    csv_iterator = _iter_session_csv_rows(sessions)
+    csv_iterator = _iter_session_csv_rows(sessions_sorted)
     headers = {"Content-Disposition": f"attachment; filename={filename}"}
     return StreamingResponse(csv_iterator, media_type="text/csv", headers=headers)
 

@@ -280,12 +280,12 @@ class TradingFeeQuoteRequest(BaseModel):
     fee_rate: float | None = Field(
         default=None,
         ge=0,
-        description="Optional override for the taker/maker fee rate (decimal form, e.g. 0.0003)",
+    description="Optional override for the taker/maker fee rate (decimal form, e.g. 0.00015)",
     )
     premium_cap_rate: float | None = Field(
         default=None,
         ge=0,
-        description="Optional override for the premium cap percentage (decimal form, e.g. 0.10)",
+    description="Optional override for the premium cap percentage (decimal form, e.g. 0.05)",
     )
 
 
