@@ -29,6 +29,7 @@ import {
   RuntimeLimits,
   RuntimeTotals,
   TradingSessionSummary,
+  PaginatedResponse,
   controlTrading,
   fetchConfigurations,
   fetchRuntime,
@@ -234,13 +235,14 @@ export default function TradingControlPanel() {
 
   const configs = configsQuery.data;
 
-  const sessionsQuery = useQuery<TradingSessionSummary[]>({
+  const sessionsQuery = useQuery<PaginatedResponse<TradingSessionSummary>>({
     ...sharedQueryOptions,
-    queryKey: ["sessions"],
-    queryFn: fetchTradingSessions
+    queryKey: ["sessions", "latest"],
+    queryFn: () => fetchTradingSessions({ page: 1, page_size: 25 })
   });
 
-  const sessions = sessionsQuery.data;
+  const sessionsPage = sessionsQuery.data;
+  const sessions = sessionsPage?.items ?? [];
 
   const runtimeQuery = useQuery<StrategyRuntime>({
     ...sharedQueryOptions,

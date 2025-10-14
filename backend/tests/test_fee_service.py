@@ -1,6 +1,6 @@
 import pytest
 
-from backend.app.services.fees_service import FeeCalculationError, calculate_option_fee
+from app.services.fees_service import FeeCalculationError, calculate_option_fee
 
 
 def test_fee_capping_applies():
