@@ -54,6 +54,7 @@ class BackendLogRecord(BaseModel):
     event: str | None = None
     message: str
     correlation_id: str | None = None
+    strategy_id: str | None = None
     request_id: str | None = None
     payload: dict[str, Any] | None = None
 
@@ -81,6 +82,7 @@ class BackendLogSummaryLatest(BaseModel):
     event: str | None = None
     message: str
     correlation_id: str | None = None
+    strategy_id: str | None = None
     request_id: str | None = None
 
 

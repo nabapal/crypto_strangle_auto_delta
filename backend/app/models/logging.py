@@ -57,6 +57,7 @@ class BackendLogEntry(Base):
     message: Mapped[str] = mapped_column(String(1024))
     correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    strategy_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     line_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
@@ -71,5 +72,6 @@ class BackendLogEntry(Base):
             "message": self.message,
             "correlation_id": self.correlation_id,
             "request_id": self.request_id,
+            "strategy_id": self.strategy_id,
             "payload": self.payload,
         }

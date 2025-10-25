@@ -50,8 +50,17 @@ printf '[info] ALLOWED_ORIGINS=%s\n' "${ALLOWED_ORIGINS}"
 
 PY_ENV="${ROOT_DIR}/.venv/bin/activate"
 if [[ ! -f "${PY_ENV}" ]]; then
-  echo "[error] Python virtualenv not found at ${PY_ENV}. Run 'python -m venv .venv' and install deps." >&2
-  exit 1
+  echo "[info] Python virtualenv not found at ${PY_ENV}. Creating and installing deps..."
+  python -m venv "${ROOT_DIR}/.venv"
+  # shellcheck disable=SC1090
+  source "${PY_ENV}"
+  if command -v "${ROOT_DIR}/.venv/bin/pip" >/dev/null 2>&1; then
+    echo "[info] Installing backend Python dependencies (this may take a minute)..."
+    "${ROOT_DIR}/.venv/bin/pip" install -e "${ROOT_DIR}/backend[dev]" || {
+      echo "[error] pip install failed. Inspect output and rerun manually." >&2
+    }
+  fi
+  # fall through with activated venv
 fi
 source "${PY_ENV}"
 
@@ -76,18 +85,18 @@ if [[ -f "${HOME}/.bashrc" ]]; then
   source "${HOME}/.bashrc"
 fi
 if ! command -v pnpm >/dev/null 2>&1; then
-  echo "[error] pnpm not found. Install it (curl -fsSL https://get.pnpm.io/install.sh | sh) before running this script." >&2
-  if [[ -n "${BACKEND_PID:-}" ]]; then
-    kill "${BACKEND_PID}" >/dev/null 2>&1 || true
-    wait "${BACKEND_PID}" || true
+  if command -v npm >/dev/null 2>&1; then
+    echo "[info] pnpm not found, installing via npm (requires network)"
+    npm install -g pnpm || echo "[warn] npm install -g pnpm failed; please install pnpm manually"
+  else
+    echo "[warn] pnpm not found and npm not available; frontend install may fail"
   fi
-  exit 1
 fi
 
 cd "${ROOT_DIR}/frontend"
 if [[ ! -d node_modules ]]; then
   echo "[deps] Installing frontend dependencies with pnpm"
-  pnpm install
+  pnpm install --silent || pnpm install
 fi
 
 printf '[start] Launching frontend dev server on port %s\n' "${FRONTEND_PORT}"
@@ -105,6 +114,22 @@ printf '[info] Remote telemetry=%s\n' "${VITE_ENABLE_REMOTE_LOGS}"
 
 pnpm dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}" --strictPort >>"${FRONTEND_LOG}" 2>&1 &
 FRONTEND_PID=$!
+
+# Perform a safe local DB migration to add strategy_id if missing (preserve data)
+if command -v sqlite3 >/dev/null 2>&1; then
+  if [[ -f "${DB_FILE}" ]]; then
+    if ! sqlite3 "${DB_FILE}" "PRAGMA table_info('backend_logs');" | awk -F'|' '{print $2}' | grep -qx "strategy_id"; then
+      backup="${DB_FILE}.bak-$(date +%s)"
+      echo "[migrate] Backing up DB to ${backup}"
+      cp "${DB_FILE}" "${backup}"
+      echo "[migrate] Adding 'strategy_id' column to backend_logs"
+      sqlite3 "${DB_FILE}" "ALTER TABLE backend_logs ADD COLUMN strategy_id TEXT;"
+      sqlite3 "${DB_FILE}" "CREATE INDEX IF NOT EXISTS ix_backend_logs_strategy_id ON backend_logs(strategy_id);"
+    else
+      echo "[migrate] strategy_id column already present in ${DB_FILE}"
+    fi
+  fi
+fi
 
 printf '\n[ready] Backend -> http://localhost:%s\n' "${BACKEND_PORT}"
 printf '[ready] Frontend -> http://localhost:%s\n' "${FRONTEND_PORT}"

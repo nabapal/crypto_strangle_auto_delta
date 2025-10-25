@@ -52,7 +52,7 @@ export default function LogViewer() {
     pageSize: 50,
     level: null,
     event: null,
-    correlationId: null,
+    strategyId: null,
     logger: null,
     search: null,
     startTime: null,
@@ -154,13 +154,13 @@ export default function LogViewer() {
 
   const handleResetFilters = () => {
     setTimeRange([null, null]);
-  setSelectedRangePreset(undefined);
+    setSelectedRangePreset(undefined);
     setFilters({
       page: 1,
       pageSize: filters.pageSize ?? 50,
       level: null,
       event: null,
-      correlationId: null,
+      strategyId: null,
       logger: null,
       search: null,
       startTime: null,
@@ -178,7 +178,7 @@ export default function LogViewer() {
   };
 
   const onTimeRangeChange = (range: TimeRange) => {
-  setSelectedRangePreset(undefined);
+    setSelectedRangePreset(undefined);
     applyTimeRange(range);
   };
 
@@ -217,8 +217,8 @@ export default function LogViewer() {
         render: (value?: string | null) => value ?? "—"
       },
       {
-        title: "Correlation ID",
-        dataIndex: "correlation_id",
+        title: "Strategy ID",
+        dataIndex: "strategy_id",
         width: 200,
         ellipsis: true,
         render: (value?: string | null) => value ?? "—"
@@ -297,8 +297,10 @@ export default function LogViewer() {
             {latest.event ? ` • ${latest.event}` : ""}
           </Text>
           <Text>{latest.message}</Text>
-          {(latest.correlation_id || latest.request_id) && (
+          {(latest.strategy_id || latest.correlation_id || latest.request_id) && (
             <Text type="secondary">
+              {latest.strategy_id ? `strategy: ${latest.strategy_id}` : ""}
+              {latest.strategy_id && (latest.correlation_id || latest.request_id) ? " • " : ""}
               {latest.correlation_id ? `corr: ${latest.correlation_id}` : ""}
               {latest.correlation_id && latest.request_id ? " • " : ""}
               {latest.request_id ? `req: ${latest.request_id}` : ""}
@@ -410,10 +412,10 @@ export default function LogViewer() {
           />
           <Input
             allowClear
-            placeholder="Correlation ID"
+            placeholder="Strategy ID"
             style={{ width: 220 }}
-            value={filters.correlationId ?? ""}
-            onChange={(e) => handleFilterChange({ correlationId: e.target.value || null })}
+            value={filters.strategyId ?? ""}
+            onChange={(e) => handleFilterChange({ strategyId: e.target.value || null })}
           />
           <Input
             allowClear

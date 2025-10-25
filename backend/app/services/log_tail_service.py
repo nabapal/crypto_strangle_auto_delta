@@ -246,6 +246,12 @@ class BackendLogTailService:
         else:
             request_id = None
 
+        strategy_id = payload.get("strategy_id") or payload.get("strategyId")
+        if isinstance(strategy_id, str):
+            strategy_id = strategy_id[:128]
+        else:
+            strategy_id = None
+
         line_hash = hashlib.sha1(raw_line.encode("utf-8", errors="ignore")).hexdigest()
 
         return {
@@ -258,6 +264,7 @@ class BackendLogTailService:
             "message": message[:1024],
             "correlation_id": correlation_id,
             "request_id": request_id,
+            "strategy_id": strategy_id,
             "payload": payload,
         }
 

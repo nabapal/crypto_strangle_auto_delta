@@ -67,6 +67,23 @@ docker compose -f "${COMPOSE_FILE}" up -d
 echo "[deploy] Stack status:"
 docker compose -f "${COMPOSE_FILE}" ps
 
+# If database on host exists, perform safe backup and add 'strategy_id' column if missing.
+db_filename="$(basename "${DATABASE_URL##*/}")"
+host_db_path="${REPO_ROOT}/data/${db_filename}"
+if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${host_db_path}" ]]; then
+  echo "[deploy] Found database at ${host_db_path}. Checking schema..."
+  if ! sqlite3 "${host_db_path}" "PRAGMA table_info('backend_logs');" | awk -F'|' '{print $2}' | grep -qx "strategy_id"; then
+    backup_path="${host_db_path}.bak-$(date +%s)"
+    echo "[deploy] Backing up DB to ${backup_path}"
+    cp "${host_db_path}" "${backup_path}"
+    echo "[deploy] Adding 'strategy_id' column to backend_logs"
+    sqlite3 "${host_db_path}" "ALTER TABLE backend_logs ADD COLUMN strategy_id TEXT;"
+    sqlite3 "${host_db_path}" "CREATE INDEX IF NOT EXISTS ix_backend_logs_strategy_id ON backend_logs(strategy_id);"
+  else
+    echo "[deploy] 'strategy_id' already exists in backend_logs"
+  fi
+fi
+
 popd >/dev/null
 
 echo

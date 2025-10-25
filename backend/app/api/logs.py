@@ -53,7 +53,7 @@ def _build_backend_log_filters(
     *,
     level: str | None,
     event: str | None,
-    correlation_id: str | None,
+    strategy_id: str | None,
     logger_name: str | None,
     search: str | None,
     start_time: datetime | None,
@@ -65,8 +65,8 @@ def _build_backend_log_filters(
         filters.append(BackendLogEntry.level == level.upper())
     if event:
         filters.append(BackendLogEntry.event == event)
-    if correlation_id:
-        filters.append(BackendLogEntry.correlation_id == correlation_id)
+    if strategy_id:
+        filters.append(BackendLogEntry.strategy_id == strategy_id)
     if logger_name:
         filters.append(BackendLogEntry.logger_name.ilike(f"%{logger_name}%"))
     if search:
@@ -150,7 +150,7 @@ async def list_backend_logs(
     page_size: int = Query(50, ge=1, le=500),
     level: str | None = Query(None, max_length=16),
     event: str | None = Query(None, max_length=128),
-    correlation_id: str | None = Query(None, alias="correlationId", max_length=128),
+    strategy_id: str | None = Query(None, alias="strategyId", max_length=128),
     logger_name: str | None = Query(None, alias="logger", max_length=128),
     search: str | None = Query(None, max_length=256),
     start_time: datetime | None = Query(None, alias="startTime"),
@@ -161,7 +161,7 @@ async def list_backend_logs(
     filters = _build_backend_log_filters(
         level=level,
         event=event,
-        correlation_id=correlation_id,
+        strategy_id=strategy_id,
         logger_name=logger_name,
         search=search,
         start_time=start_time,
@@ -195,7 +195,7 @@ async def list_backend_logs(
 async def export_backend_logs(
     level: str | None = Query(None, max_length=16),
     event: str | None = Query(None, max_length=128),
-    correlation_id: str | None = Query(None, alias="correlationId", max_length=128),
+    strategy_id: str | None = Query(None, alias="strategyId", max_length=128),
     logger_name: str | None = Query(None, alias="logger", max_length=128),
     search: str | None = Query(None, max_length=256),
     start_time: datetime | None = Query(None, alias="startTime"),
@@ -206,7 +206,7 @@ async def export_backend_logs(
     filters = _build_backend_log_filters(
         level=level,
         event=event,
-        correlation_id=correlation_id,
+        strategy_id=strategy_id,
         logger_name=logger_name,
         search=search,
         start_time=start_time,
@@ -222,7 +222,7 @@ async def export_backend_logs(
     filters_payload = {
         "level": level,
         "event": event,
-        "correlation_id": correlation_id,
+        "strategy_id": strategy_id,
         "logger_name": logger_name,
         "search": search,
         "start_time": _to_iso(start_time) if start_time else None,
@@ -245,6 +245,7 @@ async def export_backend_logs(
             "event",
             "message",
             "correlation_id",
+            "strategy_id",
             "request_id",
             "line_hash",
             "payload",
@@ -273,6 +274,7 @@ async def export_backend_logs(
                             row.event or "",
                             row.message,
                             row.correlation_id or "",
+                            row.strategy_id or "",
                             row.request_id or "",
                             row.line_hash,
                             json.dumps(row.payload, ensure_ascii=False, separators=(",", ":")) if row.payload else "",
@@ -319,7 +321,7 @@ async def export_backend_logs(
 async def backend_log_summary(
     level: str | None = Query(None, max_length=16),
     event: str | None = Query(None, max_length=128),
-    correlation_id: str | None = Query(None, alias="correlationId", max_length=128),
+    strategy_id: str | None = Query(None, alias="strategyId", max_length=128),
     logger_name: str | None = Query(None, alias="logger", max_length=128),
     search: str | None = Query(None, max_length=256),
     start_time: datetime | None = Query(None, alias="startTime"),
@@ -330,7 +332,7 @@ async def backend_log_summary(
     filters = _build_backend_log_filters(
         level=level,
         event=event,
-        correlation_id=correlation_id,
+        strategy_id=strategy_id,
         logger_name=logger_name,
         search=search,
         start_time=start_time,
@@ -423,6 +425,7 @@ async def backend_log_summary(
             event=record.event,
             message=record.message,
             correlation_id=record.correlation_id,
+            strategy_id=record.strategy_id,
             request_id=record.request_id,
         )
 

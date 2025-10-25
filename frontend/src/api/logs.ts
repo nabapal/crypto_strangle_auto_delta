@@ -11,6 +11,7 @@ export type BackendLogRecord = {
   event?: string | null;
   message: string;
   correlation_id?: string | null;
+  strategy_id?: string | null;
   request_id?: string | null;
   payload?: Record<string, unknown> | null;
 };
@@ -27,7 +28,7 @@ export type BackendLogFilters = {
   pageSize?: number;
   level?: string | null;
   event?: string | null;
-  correlationId?: string | null;
+  strategyId?: string | null;
   logger?: string | null;
   search?: string | null;
   startTime?: string | null;
@@ -46,6 +47,7 @@ export type BackendLogSummaryLatest = {
   event?: string | null;
   message: string;
   correlation_id?: string | null;
+  strategy_id?: string | null;
   request_id?: string | null;
 };
 
@@ -67,7 +69,7 @@ export function buildBackendLogParams(filters: BackendLogFilters): Record<string
   if (filters.pageSize !== undefined) params.page_size = filters.pageSize;
   if (filters.level) params.level = filters.level;
   if (filters.event) params.event = filters.event;
-  if (filters.correlationId) params.correlationId = filters.correlationId;
+  if (filters.strategyId) params.strategyId = filters.strategyId;
   if (filters.logger) params.logger = filters.logger;
   if (filters.search) params.search = filters.search;
   if (filters.startTime) params.startTime = filters.startTime;
@@ -82,7 +84,7 @@ export async function fetchBackendLogs(filters: BackendLogFilters): Promise<Back
     pageSize: filters.pageSize ?? 50,
     level: filters.level,
     event: filters.event,
-    correlationId: filters.correlationId,
+  strategyId: filters.strategyId,
     logger: filters.logger,
     search: filters.search,
     startTime: filters.startTime,
@@ -130,7 +132,7 @@ export async function downloadBackendLogsExport(filters: BackendLogFilters): Pro
   const params = buildBackendLogParams({
     level: filters.level ?? null,
     event: filters.event ?? null,
-    correlationId: filters.correlationId ?? null,
+    strategyId: filters.strategyId ?? null,
     logger: filters.logger ?? null,
     search: filters.search ?? null,
     startTime: filters.startTime ?? null,
