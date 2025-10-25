@@ -207,7 +207,7 @@ describe("LogViewer", () => {
     expect(downloadBackendLogsExportMock).toHaveBeenCalledWith(expect.objectContaining({
       level: null,
       event: null,
-      correlationId: null,
+      strategyId: null,
       logger: null,
       search: null
     }));

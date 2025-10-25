@@ -9,7 +9,7 @@ describe("buildBackendLogParams", () => {
       pageSize: 100,
       level: "ERROR",
       event: "job.failed",
-      correlationId: "corr-1",
+      strategyId: "strat-1",
       logger: "app.worker",
       search: "failure",
       startTime: "2025-10-11T12:00:00.000Z",
@@ -21,7 +21,7 @@ describe("buildBackendLogParams", () => {
       page_size: 100,
       level: "ERROR",
       event: "job.failed",
-      correlationId: "corr-1",
+      strategyId: "strat-1",
       logger: "app.worker",
       search: "failure",
       startTime: "2025-10-11T12:00:00.000Z",
@@ -35,7 +35,7 @@ describe("buildBackendLogParams", () => {
       pageSize: 50,
       level: null,
       event: null,
-      correlationId: null,
+      strategyId: null,
       logger: null,
       search: null,
       startTime: null,
@@ -47,7 +47,7 @@ describe("buildBackendLogParams", () => {
       page_size: 50
     });
     expect(Object.keys(params)).not.toEqual(
-      expect.arrayContaining(["level", "event", "correlationId", "logger", "search", "startTime", "endTime"])
+      expect.arrayContaining(["level", "event", "strategyId", "logger", "search", "startTime", "endTime"])
     );
   });
 });
