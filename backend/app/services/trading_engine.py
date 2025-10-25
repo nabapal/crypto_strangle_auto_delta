@@ -700,13 +700,21 @@ class TradingEngine:
             "enabled": bool(getattr(state.config, "trailing_sl_enabled", False)),
         }
         if isinstance(trailing_info, dict):
-            state.max_profit_seen = float(trailing_info.get("max_profit_seen", state.max_profit_seen) or 0.0)
-            state.max_profit_seen_pct = self._normalize_percent(
-                trailing_info.get("max_profit_seen_pct", state.max_profit_seen_pct)
+            state.max_profit_seen = self._to_float(
+                trailing_info.get("max_profit_seen", state.max_profit_seen),
+                state.max_profit_seen,
             )
-            state.max_drawdown_seen = float(trailing_info.get("max_drawdown_seen", state.max_drawdown_seen) or 0.0)
-            state.max_drawdown_seen_pct = self._normalize_percent(
-                trailing_info.get("max_drawdown_seen_pct", state.max_drawdown_seen_pct)
+            state.max_profit_seen_pct = self._to_float(
+                trailing_info.get("max_profit_seen_pct", state.max_profit_seen_pct),
+                state.max_profit_seen_pct,
+            )
+            state.max_drawdown_seen = self._to_float(
+                trailing_info.get("max_drawdown_seen", state.max_drawdown_seen),
+                state.max_drawdown_seen,
+            )
+            state.max_drawdown_seen_pct = self._to_float(
+                trailing_info.get("max_drawdown_seen_pct", state.max_drawdown_seen_pct),
+                state.max_drawdown_seen_pct,
             )
             level_value = trailing_info.get("level")
             if level_value is None:
