@@ -60,16 +60,27 @@ function normalizePercentValue(value?: number | null, fallback = 0): number {
   return Number(numeric.toFixed(4));
 }
 
-function clampPercentValue(value?: number | null): number {
+function sanitizePercentValue(value?: number | null, max?: number): number {
   const normalized = normalizePercentValue(value, 0);
-  if (normalized > 100) {
-    return 100;
+  if (typeof max === "number" && normalized > max) {
+    return max;
   }
   return normalized;
 }
 
-function preparePercentPayload(value?: number | null): number {
-  return clampPercentValue(value);
+function preparePercentPayload(value?: number | null, max?: number): number {
+  return sanitizePercentValue(value, max);
+}
+
+function toOptionalNumber(value?: number | null): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) {
+    return null;
+  }
+  return numeric;
 }
 
 function mapConfigToForm(config?: TradingConfig) {
@@ -93,18 +104,28 @@ function mapConfigToForm(config?: TradingConfig) {
       max_loss_pct: 40,
       max_profit_pct: 80,
       trailing_sl_enabled: true,
-      trailing_rules
+      trailing_rules,
+  strike_selection_mode: "delta" as TradingConfig["strike_selection_mode"],
+  call_option_price_min: null,
+  call_option_price_max: null,
+  put_option_price_min: null,
+  put_option_price_max: null
     };
   }
 
   return {
     ...config,
-    max_loss_pct: clampPercentValue(config.max_loss_pct),
-    max_profit_pct: clampPercentValue(config.max_profit_pct),
+    max_loss_pct: sanitizePercentValue(config.max_loss_pct),
+    max_profit_pct: sanitizePercentValue(config.max_profit_pct, 100),
     trade_time_ist: dayjs(config.trade_time_ist, "HH:mm"),
     exit_time_ist: dayjs(config.exit_time_ist, "HH:mm"),
     expiry_date: config.expiry_date ? dayjs(config.expiry_date, "DD-MM-YYYY") : null,
-    trailing_rules
+    trailing_rules,
+    strike_selection_mode: config.strike_selection_mode ?? "delta",
+    call_option_price_min: toOptionalNumber(config.call_option_price_min),
+    call_option_price_max: toOptionalNumber(config.call_option_price_max),
+    put_option_price_min: toOptionalNumber(config.put_option_price_min),
+    put_option_price_max: toOptionalNumber(config.put_option_price_max)
   };
 }
 
@@ -183,6 +204,9 @@ export default function ConfigPanel() {
 
   const trailingRules = (Form.useWatch("trailing_rules", form) as Array<{ trigger: number; level: number }> | undefined) ??
     Object.entries(defaultRules).map(([trigger, level]) => ({ trigger: Number(trigger), level: Number(level) }));
+
+  const strikeSelectionMode =
+    (Form.useWatch("strike_selection_mode", form) as ConfigFormValues["strike_selection_mode"]) ?? "delta";
 
   useEffect(() => {
     form.setFieldsValue(mapConfigToForm(selectedConfig ?? undefined));
@@ -338,10 +362,27 @@ export default function ConfigPanel() {
       expiry_date: values.expiry_date ? values.expiry_date.format("DD-MM-YYYY") : null,
       quantity: values.quantity,
       contract_size: values.contract_size,
-      max_loss_pct: preparePercentPayload(values.max_loss_pct),
-      max_profit_pct: preparePercentPayload(values.max_profit_pct),
+  max_loss_pct: preparePercentPayload(values.max_loss_pct),
+  max_profit_pct: preparePercentPayload(values.max_profit_pct, 100),
       trailing_sl_enabled: values.trailing_sl_enabled,
-      trailing_rules: formattedTrailingRules
+      trailing_rules: formattedTrailingRules,
+      strike_selection_mode: values.strike_selection_mode,
+      call_option_price_min:
+        values.strike_selection_mode === "price"
+          ? toOptionalNumber(values.call_option_price_min)
+          : null,
+      call_option_price_max:
+        values.strike_selection_mode === "price"
+          ? toOptionalNumber(values.call_option_price_max)
+          : null,
+      put_option_price_min:
+        values.strike_selection_mode === "price"
+          ? toOptionalNumber(values.put_option_price_min)
+          : null,
+      put_option_price_max:
+        values.strike_selection_mode === "price"
+          ? toOptionalNumber(values.put_option_price_max)
+          : null
     };
 
     if (!selectedConfig) {
@@ -397,6 +438,36 @@ export default function ConfigPanel() {
         title: "Underlying",
         dataIndex: "underlying",
         key: "underlying"
+      },
+      {
+        title: "Strike Mode",
+        key: "strike_selection_mode",
+        render: (_: unknown, record: TradingConfig) => {
+          if (record.strike_selection_mode === "price") {
+            const formatNumber = (value: number | null | undefined) => {
+              if (value === null || value === undefined) {
+                return "—";
+              }
+              const numeric = Number(value);
+              if (Number.isNaN(numeric)) {
+                return "—";
+              }
+              return Number.isInteger(numeric) ? numeric.toFixed(0) : numeric.toFixed(2);
+            };
+            const formatRange = (min: number | null | undefined, max: number | null | undefined) => {
+              const formattedMin = formatNumber(min);
+              const formattedMax = formatNumber(max);
+              if (formattedMin === "—" || formattedMax === "—") {
+                return "—";
+              }
+              return `${formattedMin}-${formattedMax}`;
+            };
+            const callRange = formatRange(record.call_option_price_min, record.call_option_price_max);
+            const putRange = formatRange(record.put_option_price_min, record.put_option_price_max);
+            return `Price (Call ${callRange} / Put ${putRange})`;
+          }
+          return "Delta";
+        }
       },
       {
         title: "Delta Range",
@@ -496,12 +567,197 @@ export default function ConfigPanel() {
         </Row>
         <Row gutter={16}>
           <Col span={12}>
-            <Form.Item name="delta_range_low" label="Delta Range Low" rules={[{ required: true }]}> 
+            <Form.Item
+              name="strike_selection_mode"
+              label="Strike Selection Mode"
+              tooltip="Choose how option strikes are picked each session"
+              rules={[{ required: true }]}
+            >
+              <Select
+                options={[
+                  { label: "Target Delta", value: "delta" },
+                  { label: "Option Premium Range", value: "price" }
+                ]}
+              />
+            </Form.Item>
+          </Col>
+        </Row>
+        {strikeSelectionMode === "price" && (
+          <>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item
+                  name="call_option_price_min"
+                  label="Call Min Premium"
+                  dependencies={["strike_selection_mode", "call_option_price_max"]}
+                  rules={[
+                    {
+                      validator: (_, value) => {
+                        if (strikeSelectionMode !== "price") {
+                          return Promise.resolve();
+                        }
+                        if (value === null || value === undefined || value === "") {
+                          return Promise.reject(new Error("Call min premium is required in price mode"));
+                        }
+                        if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+                          return Promise.reject(new Error("Enter a non-negative premium"));
+                        }
+                        const maxValue = form.getFieldValue("call_option_price_max");
+                        if (typeof maxValue === "number" && !Number.isNaN(maxValue) && value > maxValue) {
+                          return Promise.reject(new Error("Call min premium must be less than or equal to max premium"));
+                        }
+                        return Promise.resolve();
+                      }
+                    }
+                  ]}
+                >
+                  <InputNumber min={0} step={0.5} precision={2} style={{ width: "100%" }} addonAfter="USD" />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name="call_option_price_max"
+                  label="Call Max Premium"
+                  dependencies={["strike_selection_mode", "call_option_price_min"]}
+                  rules={[
+                    {
+                      validator: (_, value) => {
+                        if (strikeSelectionMode !== "price") {
+                          return Promise.resolve();
+                        }
+                        if (value === null || value === undefined || value === "") {
+                          return Promise.reject(new Error("Call max premium is required in price mode"));
+                        }
+                        if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+                          return Promise.reject(new Error("Enter a non-negative premium"));
+                        }
+                        const minValue = form.getFieldValue("call_option_price_min");
+                        if (typeof minValue === "number" && !Number.isNaN(minValue) && value < minValue) {
+                          return Promise.reject(new Error("Call max premium must be greater than or equal to min premium"));
+                        }
+                        return Promise.resolve();
+                      }
+                    }
+                  ]}
+                >
+                  <InputNumber min={0} step={0.5} precision={2} style={{ width: "100%" }} addonAfter="USD" />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item
+                  name="put_option_price_min"
+                  label="Put Min Premium"
+                  dependencies={["strike_selection_mode", "put_option_price_max"]}
+                  rules={[
+                    {
+                      validator: (_, value) => {
+                        if (strikeSelectionMode !== "price") {
+                          return Promise.resolve();
+                        }
+                        if (value === null || value === undefined || value === "") {
+                          return Promise.reject(new Error("Put min premium is required in price mode"));
+                        }
+                        if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+                          return Promise.reject(new Error("Enter a non-negative premium"));
+                        }
+                        const maxValue = form.getFieldValue("put_option_price_max");
+                        if (typeof maxValue === "number" && !Number.isNaN(maxValue) && value > maxValue) {
+                          return Promise.reject(new Error("Put min premium must be less than or equal to max premium"));
+                        }
+                        return Promise.resolve();
+                      }
+                    }
+                  ]}
+                >
+                  <InputNumber min={0} step={0.5} precision={2} style={{ width: "100%" }} addonAfter="USD" />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name="put_option_price_max"
+                  label="Put Max Premium"
+                  dependencies={["strike_selection_mode", "put_option_price_min"]}
+                  rules={[
+                    {
+                      validator: (_, value) => {
+                        if (strikeSelectionMode !== "price") {
+                          return Promise.resolve();
+                        }
+                        if (value === null || value === undefined || value === "") {
+                          return Promise.reject(new Error("Put max premium is required in price mode"));
+                        }
+                        if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+                          return Promise.reject(new Error("Enter a non-negative premium"));
+                        }
+                        const minValue = form.getFieldValue("put_option_price_min");
+                        if (typeof minValue === "number" && !Number.isNaN(minValue) && value < minValue) {
+                          return Promise.reject(new Error("Put max premium must be greater than or equal to min premium"));
+                        }
+                        return Promise.resolve();
+                      }
+                    }
+                  ]}
+                >
+                  <InputNumber min={0} step={0.5} precision={2} style={{ width: "100%" }} addonAfter="USD" />
+                </Form.Item>
+              </Col>
+            </Row>
+          </>
+        )}
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item
+              name="delta_range_low"
+              label="Delta Range Low"
+              dependencies={["strike_selection_mode"]}
+              rules={[
+                {
+                  validator: (_, value) => {
+                    if (strikeSelectionMode !== "delta") {
+                      return Promise.resolve();
+                    }
+                    if (value === null || value === undefined || value === "") {
+                      return Promise.reject(new Error("Delta range low is required in delta mode"));
+                    }
+                    if (typeof value !== "number" || Number.isNaN(value) || value < 0 || value > 1) {
+                      return Promise.reject(new Error("Enter a value between 0 and 1"));
+                    }
+                    return Promise.resolve();
+                  }
+                }
+              ]}
+            >
               <InputNumber min={0} max={1} step={0.01} style={{ width: "100%" }} />
             </Form.Item>
           </Col>
           <Col span={12}>
-            <Form.Item name="delta_range_high" label="Delta Range High" rules={[{ required: true }]}> 
+            <Form.Item
+              name="delta_range_high"
+              label="Delta Range High"
+              dependencies={["strike_selection_mode", "delta_range_low"]}
+              rules={[
+                {
+                  validator: (_, value) => {
+                    if (strikeSelectionMode !== "delta") {
+                      return Promise.resolve();
+                    }
+                    if (value === null || value === undefined || value === "") {
+                      return Promise.reject(new Error("Delta range high is required in delta mode"));
+                    }
+                    if (typeof value !== "number" || Number.isNaN(value) || value < 0 || value > 1) {
+                      return Promise.reject(new Error("Enter a value between 0 and 1"));
+                    }
+                    const low = form.getFieldValue("delta_range_low");
+                    if (typeof low === "number" && !Number.isNaN(low) && value <= low) {
+                      return Promise.reject(new Error("Delta range high must be greater than low"));
+                    }
+                    return Promise.resolve();
+                  }
+                }
+              ]}
+            >
               <InputNumber min={0} max={1} step={0.01} style={{ width: "100%" }} />
             </Form.Item>
           </Col>
@@ -526,7 +782,7 @@ export default function ConfigPanel() {
           </Col>
           <Col span={8}>
             <Form.Item name="max_loss_pct" label="Max Loss (%)">
-              <InputNumber min={0} max={100} step={0.5} style={{ width: "100%" }} />
+              <InputNumber min={0} step={0.5} style={{ width: "100%" }} />
             </Form.Item>
           </Col>
           <Col span={8}>

@@ -44,3 +44,9 @@ Analytics dashboard KPIs, streaks, and charts now operate on per-strategy sessio
 - Backend session rollups aggregate net/gross PnL, fees, win/loss flags, streaks, and drawdown for each strategy before emitting history metrics and chart points.
 - Frontend updates rename dashboard labels (e.g., session count, per-session averages, session histogram) and adjust tooltips to match the new aggregation level.
 - Updated pytest coverage verifies the session-level rollups and chart counts match the new semantics.
+7. Strike Selection Price Mode ✅ (shipped Nov 2, 2025)
+Enable operators to pick contracts using a price-distance strategy instead of delta targeting.
+- Added `strike_selection_mode` to trading configurations with validation for required distance percentages.
+- Trading engine normalizes tickers to identify spot references, selects contracts at configured percentage offsets, and logs selection metadata.
+- Frontend configuration panel exposes a toggle for delta vs price mode, validates inputs, and mirrors persisted values from the API.
+- Session exports and runtime summaries now include `ce_distance_pct`/`pe_distance_pct` sourced from price mode offsets.

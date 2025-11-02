@@ -13,10 +13,11 @@ Modernized control plane for automated BTC/ETH short strangle trading. The platf
 - Async SQLAlchemy data access with a SQLite default (swap the DSN for Postgres/MySQL in production).
 - Feature-flagged logging controls for structured tracing of Delta Exchange interactions.
 - Self-contained backend log ingestion service that tails `logs/backend.log`, stores entries in SQLite, and enforces retention windows.
+- Strike selection modes (delta or price-based) with validation for percentage offsets and detailed runtime metadata.
 
 ### Frontend (React + Vite)
 
-- Configuration forms covering delta ranges, schedules, trailing SL, and risk limits.
+- Configuration forms covering delta ranges, schedules, trailing SL, strike selection mode, and risk limits.
 - Live control panel to monitor session status and trigger lifecycle commands.
 - History views summarizing PnL, legs, orders, and trailing performance.
 - Advanced analytics dashboards powered by Ant Design components and React Query.
@@ -53,6 +54,12 @@ uvicorn app.main:app --port 8001 --reload
 ```
 
 Environment variables are read from `backend/.env`. Use the consolidated `.env.example` in the repository root, copy the `# Backend` section into `backend/.env`, and fill in any secrets before launching. Key toggles include log sampling (`ENGINE_DEBUG_SAMPLE_RATE`, `TICK_LOG_SAMPLE_RATE`), structured log ingestion controls (`BACKEND_LOG_INGEST_ENABLED`, `BACKEND_LOG_PATH`, `BACKEND_LOG_POLL_INTERVAL`, `BACKEND_LOG_BATCH_SIZE`, `BACKEND_LOG_RETENTION_DAYS`, `LOG_INGEST_MAX_BATCH`), and optional protection for the log batch endpoint via `LOG_INGEST_API_KEY`.
+
+#### Strike selection modes
+
+- **delta** (default): Pick call/put legs by targeting the configured delta band (`delta_range_low` / `delta_range_high`).
+- **price**: Set `strike_selection_mode` to `price` and provide `call_strike_distance_pct` / `put_strike_distance_pct` offsets (positive numbers reflect distance from spot in percent). Price mode validation enforces non-null, non-negative distances for both legs.
+- Either mode can optionally set `call_option_price_min/max` and `put_option_price_min/max` guardrails. Runtime summaries, session exports, and backend logs now include `ce_distance_pct` / `pe_distance_pct` so operators can audit price-based selection alongside delta targets.
 
 ### Frontend
 
@@ -127,6 +134,7 @@ Remember to turn the flags back to `false` once troubleshooting is complete.
 - `BackendLogTailService` streams new lines into the `backend_logs` table, making them queryable via the frontend Log Viewer and API (`/api/logs/backend`). Tune polling cadence (`BACKEND_LOG_POLL_INTERVAL`), batch size (`BACKEND_LOG_BATCH_SIZE`), and safety limits (`LOG_INGEST_MAX_BATCH`) to match your environment.
 - `BackendLogRetentionService` purges entries older than `BACKEND_LOG_RETENTION_DAYS` (default 7 days).
 - Analytics export instrumentation emits `analytics_export_completed` and `analytics_export_failed` events with duration, range, and record metadata for monitoring; refer to `docs/runbooks/analytics-export.md` for handling alerts.
+- Strike selection metadata is persisted on each strategy session (`ce_distance_pct`, `pe_distance_pct`) and captured inside `selection_metadata` log payloads, enabling price-mode audits and post-trade analysis.
 - Use the Log Viewer tab to filter by level, correlation ID, event name, or free-text search; expand rows to inspect full payloads. Remote UI log ingestion remains disabled unless `VITE_ENABLE_REMOTE_LOGS=true`.
 - Host-level rotation (`logrotate`, etc.) can be layered onto `logs/backend.log` without breaking ingestion—the tailer handles truncation and rotations automatically.
 

@@ -1,5 +1,9 @@
 # Analytics Export Runbook
 
+> **Strike Selection Update (Nov 2025)**
+>
+> When the active configuration uses **Price** strike selection, the trading engine derives CE/PE contracts using the configured percentage offsets from the current spot price. Exported session rows include `ce_distance_pct` and `pe_distance_pct`, which now reflect those configured offsets. No operational changes are required for the export job, but operators should expect those columns to stay non-null whenever price mode is active.
+
 This runbook describes how to monitor and troubleshoot the analytics history export feature exposed via `GET /api/analytics/export`.
 
 ## Overview

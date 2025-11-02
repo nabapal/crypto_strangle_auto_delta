@@ -65,9 +65,10 @@ The script performs the following actions:
 2. Stashes any local git changes with a timestamped label.
 3. Checks out `master`, fetches the latest code, and resets to `origin/master`.
 4. Stops existing containers (`docker compose down --remove-orphans`).
-5. Builds the backend and frontend images (`docker compose build --pull`).
-6. Starts the stack (`docker compose up -d`) and shows service status.
-7. Prints reminders about stashed work, confirms how to verify the log tailer/background tasks, and points to the built-in log viewer for validation.
+5. Runs `scripts/migrate_add_option_price_ranges.sh` when the host `data/delta_trader.db` exists (backs up the file before applying schema updates for price-mode support).
+6. Builds the backend and frontend images (`docker compose build --pull`).
+7. Starts the stack (`docker compose up -d`) and shows service status.
+8. Prints reminders about stashed work, confirms how to verify the log tailer/background tasks, and points to the built-in log viewer for validation.
 
 Optional enhancements for the script include adding health checks, rollback guidance, pruning old images, and logging deployment timestamps for audit trails.
 

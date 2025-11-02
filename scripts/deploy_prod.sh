@@ -61,6 +61,20 @@ docker compose -f "${COMPOSE_FILE}" down --remove-orphans
 echo "[deploy] Building images with latest code."
 docker compose -f "${COMPOSE_FILE}" build --pull backend frontend
 
+# If host DB exists, run safe migrations before bringing containers up to avoid startup failures
+db_filename="$(basename "${DATABASE_URL##*/}")"
+host_db_path="${REPO_ROOT}/data/${db_filename}"
+if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${host_db_path}" ]]; then
+  echo "[deploy] Found database at ${host_db_path}. Running safe migrations before starting containers."
+  # Backup is handled inside migration script; call it with bash to be safe
+  bash "${REPO_ROOT}/scripts/migrate_add_option_price_ranges.sh" "${host_db_path}" || {
+    echo "[deploy] Migration failed against ${host_db_path}. Aborting deployment." >&2
+    exit 1
+  }
+else
+  echo "[deploy] No host DB found at ${host_db_path} or sqlite3 missing; skipping host migrations."
+fi
+
 echo "[deploy] Starting services."
 docker compose -f "${COMPOSE_FILE}" up -d
 

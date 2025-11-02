@@ -40,9 +40,10 @@
   2. Detect local git changes; stash with timestamped label before pulling.
   3. Checkout target branch (`master`), fetch, and reset to remote.
   4. Run `docker compose -f docker-compose.prod.yml down --remove-orphans`.
-  5. Build/pull required images (`backend`, `frontend`, optional reverse proxy`).
-  6. Start stack via `docker compose ... up -d` and display status.
-  7. Output reminders about stashed work, confirm log tailer background tasks are healthy, and note how to inspect the built-in log viewer.
+  5. When the host SQLite database exists, execute `scripts/migrate_add_option_price_ranges.sh` (backups included) to ensure strike-selection columns are present before new containers start.
+  6. Build/pull required images (`backend`, `frontend`, optional reverse proxy`).
+  7. Start stack via `docker compose ... up -d` and display status.
+  8. Output reminders about stashed work, confirm log tailer background tasks are healthy, and note how to inspect the built-in log viewer.
 - Optional enhancements: health checks, rollback instructions, pruning of old images, logging of deployment timestamp.
 
 ## Deliverables

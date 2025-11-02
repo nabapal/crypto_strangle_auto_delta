@@ -93,6 +93,8 @@ frontend/
 scripts/
   start_local.sh      # One-command local stack runner
   deploy_prod.sh      # Production deployment helper (Docker Compose)
+  migrate_add_option_price_ranges.sh  # Safe SQLite migration for price-based strike columns
+  analyze_leg_prices.py  # Inspect CE/PE fills from session CSV + backend logs
   test_webhook_l1.py  # Websocket tester for Delta option prices
   sell_delta_option.py, etc.
 Docker & Ops files
@@ -121,6 +123,7 @@ Docker & Ops files
 - **Service**: `ConfigService` handles CRUD and activation of `TradingConfiguration` records.
 - **Activation**: Only one configuration can be active. `activate_configuration` toggles `is_active` flags atomically.
 - **API**: `/api/configurations` endpoints reflect these operations, returning Pydantic responses defined in `schemas/config.py`.
+- **Strike selection**: Config payloads expose `strike_selection_mode` (`delta` or `price`). Price mode requires `call_strike_distance_pct` and `put_strike_distance_pct` (positive offsets from spot). Optional guardrails (`call_option_price_min/max`, `put_option_price_min/max`) apply in either mode, and validations live in `TradingConfigPayload` validators.
 
 ### Trading Lifecycle
 - **Control Endpoint**: `POST /api/trading/control` accepts actions (`start`, `stop`, `restart`, `panic`) through `TradingControlRequest`.
@@ -147,6 +150,7 @@ Docker & Ops files
 - **Retention**: `BackendLogRetentionService` prunes entries older than `BACKEND_LOG_RETENTION_DAYS`.
 - **Frontend/Telemetry**: `/api/logs/frontend` endpoints accept optional client log batches (`FrontendLogEntry`); `VITE_ENABLE_REMOTE_LOGS` toggles usage.
 - **UI**: Log Viewer page filters by level, event, correlation ID, and expands structured payloads.
+- **Strike selection metadata**: `TradingEngine` emits `selection_metadata` structures capturing spot reference, chosen contracts, and distance percentages; they surface in runtime summaries, session exports, and backend logs for auditability.
 
 ### Frontend Workflows
 - **Auth Context**: Maintains token, exposes `login`, `logout`, `refresh` logic.
@@ -215,6 +219,7 @@ Key `TradingService` methods:
 - `get_active_configuration()` → active configuration (if any).
 - `create_configuration(payload)` → inserts new config.
 - `update_configuration(config_id, payload)` → updates fields.
+- Supports `StrikeSelectionMode` transitions with automatic normalization of percentage inputs (`normalize_percentage`) and persists price-mode distances on the ORM model.
 - `activate_configuration(config_id)` → make active, deactivate others.
 - `delete_configuration(config_id)` → removes inactive config.
 
@@ -253,6 +258,8 @@ Environment variables (see `app/core/config.py`):
 - `BACKEND_LOG_INGEST_ENABLED`, `BACKEND_LOG_PATH`
 - `ALLOWED_ORIGINS`, `API_PREFIX`, `LOG_LEVEL`, `DEBUG_HTTP_LOGGING`
 
+> **Upgrading existing databases**: If you are upgrading from a build prior to Nov 2025, run `scripts/migrate_add_option_price_ranges.sh data/delta_trader.db` (adjust the path for remote hosts) to backfill the price-mode columns before starting services. The helper scripts (`start_local.sh`, `deploy_prod.sh`) invoke this migration automatically when they detect a local SQLite file.
+
 ### Frontend Setup
 ```bash
 cd frontend
@@ -279,14 +286,15 @@ Then run:
 This script:
 1. Cleans stale SQLite DBs & ensures `data/` and `logs/` directories.
 2. Sources root `.venv`.
-3. Launches Uvicorn backend → logs to `logs/backend.log`.
-4. Ensures pnpm dependencies, starts Vite dev server → logs to `logs/frontend.log`.
-5. Exposes backend on `http://localhost:8001`, frontend on `http://localhost:5173` (or next free port).
+3. Runs `scripts/migrate_add_option_price_ranges.sh` when a local DB exists to backfill strike-selection columns (safe backup included).
+4. Launches Uvicorn backend → logs to `logs/backend.log`.
+5. Ensures pnpm dependencies, starts Vite dev server → logs to `logs/frontend.log`.
+6. Exposes backend on `http://localhost:8001`, frontend on `http://localhost:5173` (or next free port).
 
 ### Production Deployment
 1. Copy and configure environment: `cp .env.prod.example .env.prod`.
 2. Review Dockerfiles (`docker/backend.Dockerfile`, `docker/frontend.Dockerfile`) and nginx config.
-3. Deploy with `./scripts/deploy_prod.sh` (builds, restarts Compose).
+3. Deploy with `./scripts/deploy_prod.sh` (builds, restarts Compose). The script now runs `migrate_add_option_price_ranges.sh` automatically when an on-host SQLite file is detected, ensuring price-mode columns exist before containers start.
 4. Monitor via `docker compose -f docker-compose.prod.yml logs -f backend` and verify log viewer.
 
 ---

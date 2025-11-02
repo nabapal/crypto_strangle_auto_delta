@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from enum import Enum
+from typing import Any, Dict, Optional, Self, cast
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+
+
+class StrikeSelectionMode(str, Enum):
+    DELTA = "delta"
+    PRICE = "price"
 
 
 class TradingConfigPayload(BaseModel):
@@ -18,11 +24,16 @@ class TradingConfigPayload(BaseModel):
     expiry_date: Optional[str] = Field(default=None, pattern=r"^\d{2}-\d{2}-\d{4}$")
     quantity: int = Field(ge=1)
     contract_size: float = Field(gt=0)
-    max_loss_pct: float = Field(gt=0, le=100)
+    max_loss_pct: float = Field(gt=0)
     max_profit_pct: float = Field(gt=0, le=100)
     trailing_sl_enabled: bool = True
     trailing_rules: Dict[str, float] = Field(default_factory=dict)
     is_active: bool = False
+    strike_selection_mode: StrikeSelectionMode = StrikeSelectionMode.DELTA
+    call_option_price_min: float | None = Field(default=None, ge=0)
+    call_option_price_max: float | None = Field(default=None, ge=0)
+    put_option_price_min: float | None = Field(default=None, ge=0)
+    put_option_price_max: float | None = Field(default=None, ge=0)
 
     @field_validator("delta_range_high")
     @classmethod
@@ -62,6 +73,34 @@ class TradingConfigPayload(BaseModel):
         if 0 < numeric <= 1:
             return numeric * 100
         return numeric
+
+    @model_validator(mode="after")  # type: ignore[misc]
+    def validate_strike_selection(cls, values: Self) -> Self:
+        mode = values.strike_selection_mode
+        if mode == StrikeSelectionMode.PRICE:
+            required_fields = {
+                "call_option_price_min": values.call_option_price_min,
+                "call_option_price_max": values.call_option_price_max,
+                "put_option_price_min": values.put_option_price_min,
+                "put_option_price_max": values.put_option_price_max,
+            }
+            missing = [field for field, val in required_fields.items() if val is None]
+            if missing:
+                missing_list = ", ".join(missing)
+                raise ValueError(
+                    f"{missing_list} are required when strike_selection_mode is 'price'"
+                )
+
+            call_min = cast(float, values.call_option_price_min)
+            call_max = cast(float, values.call_option_price_max)
+            put_min = cast(float, values.put_option_price_min)
+            put_max = cast(float, values.put_option_price_max)
+
+            if call_min > call_max:
+                raise ValueError("call_option_price_min must be less than or equal to call_option_price_max")
+            if put_min > put_max:
+                raise ValueError("put_option_price_min must be less than or equal to put_option_price_max")
+        return values
 
 
 class TradingConfigResponse(TradingConfigPayload):

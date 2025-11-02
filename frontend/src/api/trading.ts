@@ -15,6 +15,11 @@ export interface TradingConfig {
   max_profit_pct: number;
   trailing_sl_enabled: boolean;
   trailing_rules: Record<string, number>;
+  strike_selection_mode: "delta" | "price";
+  call_option_price_min: number | null;
+  call_option_price_max: number | null;
+  put_option_price_min: number | null;
+  put_option_price_max: number | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;

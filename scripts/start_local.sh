@@ -76,6 +76,19 @@ cleanup() {
 trap cleanup EXIT
 
 printf '[start] Launching FastAPI backend on port %s\n' "${BACKEND_PORT}"
+# Run safe DB migrations (if sqlite DB exists) before starting backend to avoid runtime schema errors
+if command -v sqlite3 >/dev/null 2>&1; then
+  if [[ -f "${DB_FILE}" ]]; then
+    echo "[migrate] Running safe migrations against ${DB_FILE}"
+    bash "${ROOT_DIR}/scripts/migrate_add_option_price_ranges.sh" "${DB_FILE}" || {
+      echo "[error] Migration script failed. Aborting startup." >&2
+      exit 1
+    }
+  else
+    echo "[migrate] No DB file at ${DB_FILE}; skipping migrations (will be created by the app)."
+  fi
+fi
+
 uvicorn backend.app.main:app --host 0.0.0.0 --port "${BACKEND_PORT}" >>"${BACKEND_LOG}" 2>&1 &
 BACKEND_PID=$!
 

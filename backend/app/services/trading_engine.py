@@ -144,6 +144,8 @@ class TradingEngine:
         self._loop_iteration = 0
         self._debug_sampler = LogSampler(self._settings.engine_debug_sample_rate)
         self._session_factory: async_sessionmaker[AsyncSession] = session_factory or default_session_factory
+        # Tracks metadata produced during strike selection for diagnostics/reporting
+        self._last_selection_meta: dict[str, Any] | None = None
 
     @staticmethod
     def _normalize_percent(value: float | None) -> float:
@@ -1044,13 +1046,13 @@ class TradingEngine:
                     tickers = await self._client.get_tickers()
         contracts = self._select_contracts(tickers.get("result", []), state.config)
         self._log_selected_contracts(contracts)
-        self._update_entry_summary(
-            state,
-            {
-                "selected_contracts": [self._serialize_contract(contract) for contract in contracts],
-                "selection_generated_at": datetime.now(UTC),
-            },
-        )
+        entry_update = {
+            "selected_contracts": [self._serialize_contract(contract) for contract in contracts],
+            "selection_generated_at": datetime.now(UTC),
+        }
+        if self._last_selection_meta:
+            entry_update["selection_strategy"] = self._last_selection_meta
+        self._update_entry_summary(state, entry_update)
 
         live_trading_enabled = self._settings.delta_live_trading
         client = self._client
@@ -1451,10 +1453,92 @@ class TradingEngine:
             return parts[0].upper()
         return None
 
+    def _spot_reference_from_tickers(self, ticker_payload: List[Dict[str, Any]]) -> float:
+        candidates: list[float] = []
+        for ticker in ticker_payload:
+            for key in ("spot_price", "underlying_price", "index_price", "mark_price", "last_price", "price"):
+                price = self._optional_price(ticker.get(key))
+                if price is not None:
+                    candidates.append(price)
+            greeks = ticker.get("greeks")
+            if isinstance(greeks, dict):
+                underlying_price = self._optional_price(greeks.get("underlying_price"))
+                if underlying_price is not None:
+                    candidates.append(underlying_price)
+        if candidates:
+            return sum(candidates) / len(candidates)
+        return 0.0
+
     def _select_contracts(self, ticker_payload: List[Dict[str, Any]], config: TradingConfiguration) -> List[OptionContract]:
+        self._last_selection_meta = None
         delta_low = float(cast(float, getattr(config, "delta_range_low", 0.0) or 0.0))
         delta_high = float(cast(float, getattr(config, "delta_range_high", 1.0) or 1.0))
-        target_delta = delta_low + (delta_high - delta_low) / 2 if delta_high > delta_low else delta_high or delta_low or 0.1
+        target_delta = (
+            delta_low + (delta_high - delta_low) / 2 if delta_high > delta_low else delta_high or delta_low or 0.1
+        )
+        mode_raw = str(getattr(config, "strike_selection_mode", "delta") or "delta").lower()
+        price_mode = mode_raw == "price"
+        selection_meta: Dict[str, Any] = {"mode": "price" if price_mode else "delta"}
+        call_price_range: tuple[float, float] | None = None
+        put_price_range: tuple[float, float] | None = None
+
+        def _extract_price_range(min_value: Any, max_value: Any) -> tuple[float, float] | None:
+            if min_value is None or max_value is None:
+                return None
+            try:
+                low = float(min_value)
+                high = float(max_value)
+            except (TypeError, ValueError):
+                return None
+            if any(math.isnan(val) or math.isinf(val) for val in (low, high)):
+                return None
+            if high < low:
+                return None
+            return low, high
+
+        if price_mode:
+            call_price_range = _extract_price_range(
+                getattr(config, "call_option_price_min", None),
+                getattr(config, "call_option_price_max", None),
+            )
+            put_price_range = _extract_price_range(
+                getattr(config, "put_option_price_min", None),
+                getattr(config, "put_option_price_max", None),
+            )
+
+            if not call_price_range or not put_price_range:
+                logger.warning(
+                    "Price-based strike selection requested but price ranges were invalid; falling back to delta mode",
+                    extra={
+                        "event": "strike_selection_fallback",
+                        "mode": mode_raw,
+                        "call_range": [
+                            getattr(config, "call_option_price_min", None),
+                            getattr(config, "call_option_price_max", None),
+                        ],
+                        "put_range": [
+                            getattr(config, "put_option_price_min", None),
+                            getattr(config, "put_option_price_max", None),
+                        ],
+                    },
+                )
+                price_mode = False
+                selection_meta["mode"] = "delta"
+                call_price_range = None
+                put_price_range = None
+            else:
+                selection_meta.update(
+                    {
+                        "call_price_range": list(call_price_range),
+                        "put_price_range": list(put_price_range),
+                        "call_price_target": (call_price_range[0] + call_price_range[1]) / 2,
+                        "put_price_target": (put_price_range[0] + put_price_range[1]) / 2,
+                    }
+                )
+
+        if not price_mode:
+            selection_meta["delta_range"] = [delta_low, delta_high]
+            selection_meta["target_delta"] = target_delta
         filtered: List[OptionContract] = []
         expiry_groups: dict[date, dict[str, List[OptionContract]]] = {}
         missing_by_type: dict[str, List[OptionContract]] = {"call": [], "put": []}
@@ -1465,7 +1549,7 @@ class TradingEngine:
         for ticker in ticker_payload:
             greeks = ticker.get("greeks") or {}
             delta = abs(float(greeks.get("delta", 0)))
-            if not (delta_low <= delta <= delta_high):
+            if not price_mode and not (delta_low <= delta <= delta_high):
                 continue
             symbol = str(ticker.get("symbol") or "")
             underlying_symbol = str(
@@ -1533,7 +1617,8 @@ class TradingEngine:
                     "No option contracts matched the configured underlying; "
                     f"found underlyings={sorted(mismatched_underlyings)} expected={expected_underlying}"
                 )
-            raise RuntimeError("No contracts found within delta range")
+            message = "No contracts found within delta range" if not price_mode else "No contracts available for price-based strike selection"
+            raise RuntimeError(message)
 
         target_expiry = self._resolve_target_expiry_date(config)
         selected_expiry: date | None = None
@@ -1573,9 +1658,24 @@ class TradingEngine:
                 min_allowed_date.isoformat() if min_allowed_date else None,
             )
 
-        def pick_best(candidates: List[OptionContract]) -> OptionContract:
+        def pick_best(candidates: List[OptionContract], option_kind: str) -> OptionContract:
             if not candidates:
                 raise RuntimeError("No suitable option contracts found after expiry filtering")
+            if price_mode and call_price_range and put_price_range:
+                low, high = call_price_range if option_kind == "call" else put_price_range
+                midpoint = (low + high) / 2
+
+                def sort_key(contract: OptionContract) -> tuple[int, float, float, float, int]:
+                    premium = contract.mid_price
+                    price_centre_gap = abs(premium - midpoint)
+                    delta_gap = abs(contract.delta - target_delta)
+                    if low <= premium <= high:
+                        return (0, 0.0, price_centre_gap, delta_gap, contract.product_id)
+                    distance = low - premium if premium < low else premium - high
+                    return (1, distance, price_centre_gap, delta_gap, contract.product_id)
+
+                return min(candidates, key=sort_key)
+
             # Prefer the contract with the highest delta within the allowed range.
             # If multiple contracts share the same delta, fall back to the one whose
             # strike is closest to the underlying delta target to keep selections stable.
@@ -1610,8 +1710,8 @@ class TradingEngine:
                 )
             raise RuntimeError("No suitable put option contracts found after expiry filtering")
 
-        call_contract = pick_best(calls)
-        put_contract = pick_best(puts)
+        call_contract = pick_best(calls, "call")
+        put_contract = pick_best(puts, "put")
         if call_contract.expiry_date != put_contract.expiry_date:
             logger.info(
                 "Selected contracts have differing expiries call=%s put=%s",
@@ -1628,6 +1728,22 @@ class TradingEngine:
             raise RuntimeError(
                 "Selected contracts span multiple underlyings; verify underlying asset configuration."
             )
+
+        selection_meta.update(
+            {
+                "selected_expiry": selected_expiry.isoformat() if selected_expiry else None,
+                "selected_call_strike": call_contract.strike_price,
+                "selected_put_strike": put_contract.strike_price,
+            }
+        )
+        if price_mode and call_price_range and put_price_range:
+            selection_meta.update(
+                {
+                    "selected_call_mid_price": call_contract.mid_price,
+                    "selected_put_mid_price": put_contract.mid_price,
+                }
+            )
+        self._last_selection_meta = selection_meta
 
         return [call_contract, put_contract]
 
@@ -2710,6 +2826,11 @@ class TradingEngine:
             "max_loss_pct": getattr(config, "max_loss_pct", None),
             "max_profit_pct": getattr(config, "max_profit_pct", None),
             "trailing_sl_enabled": getattr(config, "trailing_sl_enabled", None),
+            "strike_selection_mode": getattr(config, "strike_selection_mode", "delta"),
+            "call_option_price_min": getattr(config, "call_option_price_min", None),
+            "call_option_price_max": getattr(config, "call_option_price_max", None),
+            "put_option_price_min": getattr(config, "put_option_price_min", None),
+            "put_option_price_max": getattr(config, "put_option_price_max", None),
         }
 
     async def _refresh_position_analytics(

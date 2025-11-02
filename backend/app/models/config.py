@@ -27,6 +27,11 @@ class TradingConfiguration(Base):
     max_profit_pct = Column(Float, default=80.0)
     trailing_sl_enabled = Column(Boolean, default=True)
     trailing_rules = Column(JSON, nullable=False, default=dict)
+    strike_selection_mode = Column(String(16), default="delta")
+    call_option_price_min = Column(Float, nullable=True)
+    call_option_price_max = Column(Float, nullable=True)
+    put_option_price_min = Column(Float, nullable=True)
+    put_option_price_max = Column(Float, nullable=True)
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
