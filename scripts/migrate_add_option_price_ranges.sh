@@ -45,7 +45,6 @@ add_column_if_missing "${TABLE}" "put_option_price_max" "put_option_price_max FL
 
 # Add strike_selection_mode column if missing (string, default 'delta')
 add_column_if_missing "${TABLE}" "strike_selection_mode" "strike_selection_mode TEXT DEFAULT 'delta'"
-
 # Optional: create indexes to speed up queries if desired
 # (Not strictly necessary for small configs table, but harmless.)
 sqlite3 "${DB_FILE}" "CREATE INDEX IF NOT EXISTS ix_trading_configurations_call_min ON ${TABLE}(call_option_price_min);"

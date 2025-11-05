@@ -123,7 +123,7 @@ Docker & Ops files
 - **Service**: `ConfigService` handles CRUD and activation of `TradingConfiguration` records.
 - **Activation**: Only one configuration can be active. `activate_configuration` toggles `is_active` flags atomically.
 - **API**: `/api/configurations` endpoints reflect these operations, returning Pydantic responses defined in `schemas/config.py`.
-- **Strike selection**: Config payloads expose `strike_selection_mode` (`delta` or `price`). Price mode requires `call_strike_distance_pct` and `put_strike_distance_pct` (positive offsets from spot). Optional guardrails (`call_option_price_min/max`, `put_option_price_min/max`) apply in either mode, and validations live in `TradingConfigPayload` validators.
+- **Strike selection**: Config payloads expose `strike_selection_mode` (`delta` or `price`). Price mode requires `call_option_price_min/max` and `put_option_price_min/max`, constraining the acceptable option premiums for each leg. Validation rules live in `TradingConfigPayload` to enforce non-null guardrails, ordering, and positive values.
 
 ### Trading Lifecycle
 - **Control Endpoint**: `POST /api/trading/control` accepts actions (`start`, `stop`, `restart`, `panic`) through `TradingControlRequest`.

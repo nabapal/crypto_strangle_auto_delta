@@ -58,7 +58,7 @@ Environment variables are read from `backend/.env`. Use the consolidated `.env.e
 #### Strike selection modes
 
 - **delta** (default): Pick call/put legs by targeting the configured delta band (`delta_range_low` / `delta_range_high`).
-- **price**: Set `strike_selection_mode` to `price` and provide `call_strike_distance_pct` / `put_strike_distance_pct` offsets (positive numbers reflect distance from spot in percent). Price mode validation enforces non-null, non-negative distances for both legs.
+- **price**: Set `strike_selection_mode` to `price` and provide the option premium guardrails (`call_option_price_min/max` and `put_option_price_min/max`). The engine targets contracts whose mid-prices sit inside these ranges, falling back to delta mode only if the supplied guardrails are invalid.
 - Either mode can optionally set `call_option_price_min/max` and `put_option_price_min/max` guardrails. Runtime summaries, session exports, and backend logs now include `ce_distance_pct` / `pe_distance_pct` so operators can audit price-based selection alongside delta targets.
 
 ### Frontend

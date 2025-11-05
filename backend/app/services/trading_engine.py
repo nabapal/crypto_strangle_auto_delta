@@ -1992,6 +1992,46 @@ class TradingEngine:
 
         return 0.0, False, 0.0, None
 
+    async def _cancel_open_order(
+        self,
+        order_id: str,
+        product_id: int,
+        *,
+        poll_timeout: float = 10.0,
+        poll_interval: float = 1.0,
+    ) -> Dict[str, Any] | None:
+        if not self._client:
+            return None
+
+        # Poll the exchange until the order reports a terminal state so we do not overlap retries.
+        deadline = time.monotonic() + max(poll_timeout, poll_interval)
+        last_status: Dict[str, Any] | None = None
+
+        while time.monotonic() < deadline:
+            try:
+                await self._client.cancel_order(order_id, product_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to cancel order %s",
+                    order_id,
+                    extra={"event": "limit_order_cancel_failed", "order_id": order_id},
+                )
+            try:
+                status_response = await self._client.get_order(order_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Unable to fetch status for order %s after cancel", order_id)
+                break
+
+            status = status_response.get("result") or status_response
+            last_status = status
+            state = (status.get("state") or status.get("status") or "").lower()
+            if state in {"cancelled", "canceled", "closed", "filled", "rejected"}:
+                return status
+
+            await asyncio.sleep(poll_interval)
+
+        return last_status
+
     async def _execute_order_strategy(
         self,
         contract: OptionContract,
@@ -2162,20 +2202,69 @@ class TradingEngine:
                 )
                 if remaining <= 1e-8:
                     return OrderStrategyOutcome(True, "limit_orders", total_filled, status or order_result, attempts)
+
+                if fill_ratio < 0.999999:
+                    attempts[-1]["partial_fill"] = True
+                    cancel_status = await self._cancel_open_order(order_id, contract.product_id)
+                    if cancel_status is not None:
+                        final_status = cancel_status
+                        size_value = self._to_float(cancel_status.get("size"), attempts[-1]["size"])
+                        unfilled_value = self._to_float(cancel_status.get("unfilled_size"), size_value)
+                        final_filled = max(size_value - unfilled_value, 0.0)
+                        incremental_fill = max(0.0, final_filled - attempts[-1]["filled_amount"])
+                        if incremental_fill > 0:
+                            total_filled += incremental_fill
+                            remaining = max(0.0, remaining - incremental_fill)
+                        attempts[-1]["filled_amount"] = final_filled
+                        attempts[-1]["fill_ratio"] = round(final_filled / size_value if size_value else 0.0, 6)
+                        attempts[-1]["status"] = cancel_status.get("state") or cancel_status.get("status")
+                        attempts[-1]["cancelled"] = (cancel_status.get("state") or cancel_status.get("status") or "").lower() in {
+                            "cancelled",
+                            "canceled",
+                        }
+                    else:
+                        logger.warning(
+                            "Unable to confirm cancellation for partial fill on order %s; aborting retries to prevent overfill",
+                            order_id,
+                            extra={
+                                "event": "limit_order_cancel_unconfirmed",
+                                "order_id": order_id,
+                                "attempt": attempt,
+                            },
+                        )
+                        return OrderStrategyOutcome(False, "cancel_unconfirmed", total_filled, status or order_result, attempts)
+
+                    if remaining <= 1e-8:
+                        return OrderStrategyOutcome(True, "limit_orders", total_filled, status or order_result, attempts)
             else:
-                try:
-                    await self._client.cancel_order(order_id, contract.product_id)
-                    attempts[-1]["cancelled"] = True
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Failed to cancel limit order %s",
+                cancel_status = await self._cancel_open_order(order_id, contract.product_id)
+                if cancel_status is not None:
+                    final_status = cancel_status
+                    attempts[-1]["cancelled"] = (cancel_status.get("state") or cancel_status.get("status") or "").lower() in {
+                        "cancelled",
+                        "canceled",
+                    }
+                    attempts[-1]["status"] = cancel_status.get("state") or cancel_status.get("status")
+                    size_value = self._to_float(cancel_status.get("size"), attempts[-1]["size"])
+                    unfilled_value = self._to_float(cancel_status.get("unfilled_size"), size_value)
+                    final_filled = max(size_value - unfilled_value, 0.0)
+                    if final_filled > attempts[-1].get("filled_amount", 0.0):
+                        incremental_fill = final_filled - attempts[-1].get("filled_amount", 0.0)
+                        total_filled += incremental_fill
+                        remaining = max(0.0, remaining - incremental_fill)
+                        attempts[-1]["filled_amount"] = final_filled
+                        attempts[-1]["fill_ratio"] = round(final_filled / size_value if size_value else 0.0, 6)
+                else:
+                    logger.warning(
+                        "Unable to confirm cancellation after timeout for order %s",
                         order_id,
                         extra={
-                            "event": "limit_order_cancel_failed",
+                            "event": "limit_order_cancel_unconfirmed",
                             "order_id": order_id,
                             "attempt": attempt,
                         },
                     )
+                    return OrderStrategyOutcome(False, "cancel_unconfirmed", total_filled, status or order_result, attempts)
 
             if remaining <= 1e-8:
                 break

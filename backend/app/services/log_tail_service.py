@@ -25,6 +25,8 @@ except ImportError as exc:  # pragma: no cover - dependency guard
 
 logger = logging.getLogger("app.log_tail")
 
+_SQLITE_PARAMETER_LIMIT = 999
+
 
 def _parse_timestamp(value: Any) -> datetime:
     if isinstance(value, datetime):
@@ -270,8 +272,9 @@ class BackendLogTailService:
 
     async def _persist_rows(self, rows: list[dict[str, Any]]) -> int:
         persisted = 0
+        chunk_size = self._determine_chunk_size(rows[0]) if rows else self._batch_size
         async with self._session_factory() as session:
-            for chunk in _chunk(rows, self._batch_size):
+            for chunk in _chunk(rows, chunk_size):
                 stmt = sqlite_insert(BackendLogEntry).values(chunk).on_conflict_do_nothing(
                     index_elements=[BackendLogEntry.line_hash]
                 )
@@ -280,3 +283,21 @@ class BackendLogTailService:
                     persisted += result.rowcount
             await session.commit()
         return persisted
+
+    def _determine_chunk_size(self, sample_row: dict[str, Any]) -> int:
+        """Return a batch size that stays within SQLite's parameter limit."""
+
+        requested = self._batch_size
+        column_count = max(1, len(sample_row))
+        safe_limit = max(1, _SQLITE_PARAMETER_LIMIT // column_count)
+        if requested > safe_limit:
+            logger.debug(
+                "Capping backend log insert batch size",
+                extra={
+                    "event": "backend_log_insert_batch_capped",
+                    "requested": requested,
+                    "effective": safe_limit,
+                    "column_count": column_count,
+                },
+            )
+        return min(requested, safe_limit)
